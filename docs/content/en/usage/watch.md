@@ -34,3 +34,13 @@ Regex-match the message text. For example:
 ```
 
 This will watch the chat with ID `12345678`, and only save messages whose text contains `hello`.
+
+## from
+
+Match the message sender by user ID or username. Separate multiple users with commas. Usernames are resolved to numeric IDs when the watch is added. For example:
+
+```
+/watch 12345678 from:@Luscious_Yana,@another_user,123456789
+```
+
+This will watch the chat with ID `12345678`, and only save media messages sent by those users.

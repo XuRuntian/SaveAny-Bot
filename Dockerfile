@@ -3,6 +3,11 @@ FROM golang:alpine AS builder
 ARG VERSION="dev"
 ARG GitCommit="Unknown"
 ARG BuildTime="Unknown"
+ARG GOPROXY="https://goproxy.cn,direct"
+ARG GOSUMDB="sum.golang.google.cn"
+
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 
 WORKDIR /app
 

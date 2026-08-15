@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -26,6 +27,11 @@ import (
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/SaveAny-Bot/storage"
 	"github.com/rs/xid"
+)
+
+const (
+	watchFilterMsgRegex = "msgre"
+	watchFilterFrom     = "from"
 )
 
 func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
@@ -64,20 +70,27 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 	filter := ""
 	if len(args) > 2 {
 		filterArg := strings.Join(args[2:], " ")
-		filterType := strings.Split(filterArg, ":")[0]
-		filterData := strings.Split(filterArg, ":")[1]
-		if filterType == "" || filterData == "" {
+		filterType, filterData, ok := strings.Cut(filterArg, ":")
+		filterType = strings.TrimSpace(filterType)
+		if !ok || filterType == "" || strings.TrimSpace(filterData) == "" {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
 			return dispatcher.EndGroups
 		}
 		switch filterType {
-		case "msgre":
+		case watchFilterMsgRegex:
 			_, err := regexp.Compile(filterData)
 			if err != nil {
 				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": err.Error()})), nil)
 				return dispatcher.EndGroups
 			}
 			filter = filterType + ":" + filterData
+		case watchFilterFrom:
+			senderIDs, err := resolveWatchFilterSenderIDs(ctx, filterData)
+			if err != nil {
+				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
+				return dispatcher.EndGroups
+			}
+			filter = filterType + ":" + formatWatchFilterSenderIDs(senderIDs)
 		default:
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterTypeUnsupported)), nil)
 			return dispatcher.EndGroups
@@ -94,6 +107,47 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoWatchChatStarted, map[string]any{"Chat": chatArg})), nil)
 	return dispatcher.EndGroups
+}
+
+func resolveWatchFilterSenderIDs(ctx *ext.Context, idsOrUsernames string) ([]int64, error) {
+	resolveCtx := ctx
+	if userCtx := userclient.GetCtx(); userCtx != nil {
+		resolveCtx = userCtx
+	}
+
+	parts := strings.Split(idsOrUsernames, ",")
+	senderIDs := make([]int64, 0, len(parts))
+	seen := make(map[int64]struct{}, len(parts))
+	for _, part := range parts {
+		idOrUsername := strings.TrimSpace(part)
+		if idOrUsername == "" {
+			return nil, fmt.Errorf("empty sender in from filter")
+		}
+		senderID, err := tgutil.ParseChatID(resolveCtx, idOrUsername)
+		if err != nil {
+			return nil, err
+		}
+		if senderID == 0 {
+			return nil, fmt.Errorf("sender ID is zero")
+		}
+		if _, ok := seen[senderID]; ok {
+			continue
+		}
+		seen[senderID] = struct{}{}
+		senderIDs = append(senderIDs, senderID)
+	}
+	if len(senderIDs) == 0 {
+		return nil, fmt.Errorf("no sender IDs resolved")
+	}
+	return senderIDs, nil
+}
+
+func formatWatchFilterSenderIDs(senderIDs []int64) string {
+	parts := make([]string, 0, len(senderIDs))
+	for _, senderID := range senderIDs {
+		parts = append(parts, strconv.FormatInt(senderID, 10))
+	}
+	return strings.Join(parts, ",")
 }
 
 func handleLswatchCmd(ctx *ext.Context, update *ext.Update) error {
@@ -202,6 +256,42 @@ func (w *watchMediaGroupHandler) addFile(chatID int64, userID uint, file tfile.T
 	})
 }
 
+func watchFilterMatches(filter, msgText string, senderID int64) (bool, error) {
+	filterType, filterData, ok := strings.Cut(filter, ":")
+	if !ok || filterType == "" || filterData == "" {
+		return false, fmt.Errorf("invalid filter format")
+	}
+	switch filterType {
+	case watchFilterMsgRegex:
+		ok, err := regexp.MatchString(filterData, msgText)
+		if err != nil {
+			return false, fmt.Errorf("invalid regex filter: %w", err)
+		}
+		return ok, nil
+	case watchFilterFrom:
+		return watchSenderIDMatches(filterData, senderID)
+	default:
+		return false, fmt.Errorf("unsupported filter type %s", filterType)
+	}
+}
+
+func watchSenderIDMatches(filterData string, senderID int64) (bool, error) {
+	for _, part := range strings.Split(filterData, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false, fmt.Errorf("empty sender ID")
+		}
+		expectedSenderID, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return false, fmt.Errorf("invalid sender ID: %w", err)
+		}
+		if senderID != 0 && senderID == expectedSenderID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 	if userclient.GetCtx() == nil {
 		return
@@ -217,24 +307,18 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 			continue
 		}
 		msgText := event.File.Message().GetMessage()
+		senderID := int64(0)
+		if fromID, ok := event.File.Message().GetFromID(); ok {
+			senderID = tgutil.ChatIdFromPeer(fromID)
+		}
 		for _, chat := range chats {
 			if chat.Filter != "" {
-				filter := strings.Split(chat.Filter, ":")
-				if len(filter) != 2 {
-					logger.Warnf("Invalid filter format in chat %d, skipping", chat.ChatID)
+				matched, err := watchFilterMatches(chat.Filter, msgText, senderID)
+				if err != nil {
+					logger.Warnf("Invalid or unsupported filter %q in chat %d: %v, skipping", chat.Filter, chat.ChatID, err)
 					continue
 				}
-				filterType := filter[0]
-				filterData := filter[1]
-				switch filterType {
-				case "msgre": // [TODO] enums for filter types
-					if ok, err := regexp.MatchString(filterData, msgText); err != nil {
-						continue
-					} else if !ok {
-						continue
-					}
-				default:
-					logger.Warnf("Unsupported filter type %s in chat %d, skipping", filterType, chat.ChatID)
+				if !matched {
 					continue
 				}
 			}

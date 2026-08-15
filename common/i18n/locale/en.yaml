@@ -88,8 +88,9 @@ bot:
 
       Example:
       /watch -1002229835658 msgre:.*plana.*
+      /watch -1002229835658 from:@Luscious_Yana,@another_user
 
-      This will watch chat with ID -1002229835658 and save all media messages containing "plana".
+      This will watch chat with ID -1002229835658 and save media messages containing "plana" or sent by the specified users.
     common:
       cancel_button_text: "Cancel"
       error_invalid_regex: "Invalid regex: {{.Error}}"

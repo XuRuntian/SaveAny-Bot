@@ -1,6 +1,10 @@
 package database
 
-import "context"
+import (
+	"context"
+
+	"github.com/gotd/td/constant"
+)
 
 func (user *User) WatchChat(ctx context.Context, chat WatchChat) error {
 	if len(user.WatchChats) == 0 {
@@ -31,9 +35,32 @@ func (user *User) WatchingChat(ctx context.Context, chatID int64) (bool, error) 
 
 func GetWatchChatsByChatID(ctx context.Context, chatID int64) ([]*WatchChat, error) {
 	var watchChats []*WatchChat
-	err := db.WithContext(ctx).Where("chat_id = ?", chatID).Find(&watchChats).Error
+	err := db.WithContext(ctx).Where("chat_id IN ?", watchChatIDCandidates(chatID)).Find(&watchChats).Error
 	if err != nil {
 		return nil, err
 	}
 	return watchChats, nil
+}
+
+func watchChatIDCandidates(chatID int64) []int64 {
+	candidates := make([]int64, 0, 2)
+	add := func(id int64) {
+		if id == 0 {
+			return
+		}
+		for _, candidate := range candidates {
+			if candidate == id {
+				return
+			}
+		}
+		candidates = append(candidates, id)
+	}
+
+	add(chatID)
+	tdlibID := constant.TDLibPeerID(chatID)
+	if tdlibID.IsChat() || tdlibID.IsChannel() {
+		add(tdlibID.ToPlain())
+	}
+
+	return candidates
 }
