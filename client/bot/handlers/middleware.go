@@ -3,6 +3,7 @@ package handlers
 import (
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
+	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/slice"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/dirutil"
 	"github.com/krau/SaveAny-Bot/common/i18n"
@@ -26,6 +27,15 @@ func checkPermission(ctx *ext.Context, update *ext.Update) error {
 // for message handlers (checkPermission).
 func withPermission(handler func(*ext.Context, *ext.Update) error) func(*ext.Context, *ext.Update) error {
 	return func(ctx *ext.Context, update *ext.Update) error {
+		if update.CallbackQuery != nil {
+			log.FromContext(ctx).Debug(
+				"Received callback query",
+				"user_id", update.CallbackQuery.GetUserID(),
+				"chat_id", update.GetUserChat().GetID(),
+				"msg_id", update.CallbackQuery.GetMsgID(),
+				"data", string(update.CallbackQuery.Data),
+			)
+		}
 		if err := checkPermission(ctx, update); err != nil {
 			return err
 		}
