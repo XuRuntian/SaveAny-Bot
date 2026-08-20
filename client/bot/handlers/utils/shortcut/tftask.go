@@ -2,6 +2,7 @@ package shortcut
 
 import (
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/celestix/gotgproto/dispatcher"
@@ -290,9 +291,11 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 		})
 		return dispatcher.EndGroups
 	}
+	queueLength := core.GetLength(injectCtx)
+	logger.Debug("Added batch Telegram file task", "task_id", taskid, "user_id", userID, "files", len(elems), "queue_length", queueLength)
 	ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
 		ID:          trackMsgID,
-		Message:     buildBatchAddedMessage(len(elems), skipped),
+		Message:     buildBatchAddedMessage(len(elems), skipped, queueLength),
 		ReplyMarkup: nil,
 	})
 	return dispatcher.EndGroups
@@ -325,14 +328,15 @@ func selectedConflictStrategy(strategies []string) string {
 	return strategies[0]
 }
 
-func buildBatchAddedMessage(count int, skipped []string) string {
+func buildBatchAddedMessage(count int, skipped []string, queueLength int) string {
+	queueText := i18n.T(i18nk.BotMsgTasksInfoQueueLengthPrefix, nil) + strconv.Itoa(queueLength)
 	if len(skipped) == 0 {
 		return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAdded, map[string]any{
 			"Count": count,
-		})
+		}) + queueText
 	}
 	return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAddedWithSkipped, map[string]any{
 		"Count":   count,
 		"Skipped": strings.Join(skipped, "\n"),
-	})
+	}) + queueText
 }
