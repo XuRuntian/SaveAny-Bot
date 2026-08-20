@@ -41,8 +41,9 @@ func BuildAddSelectStorageKeyboard(stors []storage.Storage, adddata tcbdata.Add)
 			SelectedDirPath:  adddata.SelectedDirPath,
 			ConflictStrategy: adddata.ConflictStrategy,
 
-			Files:   adddata.Files,
-			AsBatch: len(adddata.Files) > 1,
+			Files:          adddata.Files,
+			AsBatch:        len(adddata.Files) > 1,
+			ManualGroupKey: adddata.ManualGroupKey,
 
 			TphPageNode: adddata.TphPageNode,
 			TphPics:     adddata.TphPics,

@@ -76,6 +76,8 @@ bot:
       2. After setting default storage, send /save <channel_id/username> <message_id_range> to batch save files. Rules will be applied; if no rule matches, default storage will be used.
       Example:
       /save @acherkrau 114-514
+
+      3. When sending multiple Telegram message links, add group:merge to merge parsed photos/videos into albums in input order.
     watch_help_text: |
       Use /watch to watch messages in a chat and automatically save them to the default storage, following storage rules.
 

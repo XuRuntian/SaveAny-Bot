@@ -59,8 +59,9 @@ type Add struct {
 	SelectedDirPath  string
 	ConflictStrategy string
 	// tfiles
-	Files   []tfile.TGFileMessage
-	AsBatch bool
+	Files          []tfile.TGFileMessage
+	AsBatch        bool
+	ManualGroupKey string
 	// tphpics
 	TphPageNode *telegraph.Page
 	TphPics     []string

@@ -19,6 +19,10 @@ func handleMessageLink(ctx *ext.Context, update *ext.Update) error {
 		return err
 	}
 	logger := log.FromContext(ctx)
+	manualGroupKey := ""
+	if shortcut.MergeMessageLinksRequested(update) {
+		manualGroupKey = shortcut.MessageLinksManualGroupKey(update)
+	}
 	userId := update.GetUserChat().GetID()
 	stors := storage.GetUserStorages(ctx, userId)
 	if len(files) == 1 {
@@ -34,7 +38,8 @@ func handleMessageLink(ctx *ext.Context, update *ext.Update) error {
 		return dispatcher.EndGroups
 	}
 	markup, err := msgelem.BuildAddSelectStorageKeyboard(stors, tcbdata.Add{
-		Files: files,
+		Files:          files,
+		ManualGroupKey: manualGroupKey,
 	})
 	if err != nil {
 		logger.Errorf("Failed to build storage selection keyboard: %s", err)
@@ -58,6 +63,9 @@ func handleSilentSaveLink(ctx *ext.Context, update *ext.Update) error {
 	userId := update.GetUserChat().GetID()
 	if len(files) == 1 {
 		return shortcut.CreateAndAddTGFileTaskWithEdit(ctx, userId, stor, dirutil.PathFromContext(ctx), files[0], replied.ID)
+	}
+	if shortcut.MergeMessageLinksRequested(update) {
+		return shortcut.CreateAndAddMergedBatchTGFileTaskWithEdit(ctx, userId, stor, dirutil.PathFromContext(ctx), files, replied.ID, shortcut.MessageLinksManualGroupKey(update))
 	}
 	return shortcut.CreateAndAddBatchTGFileTaskWithEdit(ctx, userId, stor, dirutil.PathFromContext(ctx), files, replied.ID)
 }

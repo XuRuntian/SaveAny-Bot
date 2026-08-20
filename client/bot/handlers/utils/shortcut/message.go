@@ -65,6 +65,34 @@ func GetFileFromMessageWithReply(ctx *ext.Context, update *ext.Update, message *
 
 type EditMessageFunc func(text string, markup tg.ReplyMarkupClass)
 
+const (
+	mergeMessageLinksFlag    = "group:merge"
+	mergeMessageLinksCommand = "/merge"
+)
+
+func MergeMessageLinksRequested(update *ext.Update) bool {
+	if update == nil || update.EffectiveMessage == nil || update.EffectiveMessage.Message == nil {
+		return false
+	}
+	return MergeMessageLinksRequestedText(update.EffectiveMessage.Message.GetMessage())
+}
+
+func MergeMessageLinksRequestedText(text string) bool {
+	for _, field := range strings.Fields(strings.ToLower(text)) {
+		if field == mergeMessageLinksFlag || field == mergeMessageLinksCommand || strings.HasPrefix(field, mergeMessageLinksCommand+"@") {
+			return true
+		}
+	}
+	return false
+}
+
+func MessageLinksManualGroupKey(update *ext.Update) string {
+	if update == nil || update.EffectiveMessage == nil || update.EffectiveChat() == nil {
+		return ""
+	}
+	return fmt.Sprintf("manual-link-merge:%d:%d", update.EffectiveChat().GetID(), update.EffectiveMessage.ID)
+}
+
 // 获取链接中的文件并回复等待消息
 func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Update) (replied *types.Message, files []tfile.TGFileMessage, editReplied EditMessageFunc, err error) {
 	logger := log.FromContext(ctx)

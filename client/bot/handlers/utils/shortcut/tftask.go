@@ -69,7 +69,7 @@ startCreateTask:
 	if strategy == tcbdata.ConflictStrategyAsk || strategy == tcbdata.ConflictStrategySkip {
 		exists := stor.Exists(ctx, storagePath)
 		if exists && strategy == tcbdata.ConflictStrategyAsk {
-			return promptTGFileConflictStrategy(ctx, userID, stor.Name(), dirPath, []tfile.TGFileMessage{file}, false, []string{conflictutil.FormatPath(stor.Name(), storagePath)}, trackMsgID)
+			return promptTGFileConflictStrategy(ctx, userID, stor.Name(), dirPath, []tfile.TGFileMessage{file}, false, []string{conflictutil.FormatPath(stor.Name(), storagePath)}, trackMsgID, "")
 		}
 		if exists {
 			ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
@@ -123,6 +123,14 @@ startCreateTask:
 
 // 创建一个 batchtfile.BatchTGFileTask 并添加到任务队列中, 以编辑消息的方式反馈结果
 func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor storage.Storage, dirPath string, files []tfile.TGFileMessage, trackMsgID int, conflictStrategy ...string) error {
+	return createAndAddBatchTGFileTaskWithEdit(ctx, userID, stor, dirPath, files, trackMsgID, "", conflictStrategy...)
+}
+
+func CreateAndAddMergedBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor storage.Storage, dirPath string, files []tfile.TGFileMessage, trackMsgID int, manualGroupKey string, conflictStrategy ...string) error {
+	return createAndAddBatchTGFileTaskWithEdit(ctx, userID, stor, dirPath, files, trackMsgID, manualGroupKey, conflictStrategy...)
+}
+
+func createAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor storage.Storage, dirPath string, files []tfile.TGFileMessage, trackMsgID int, manualGroupKey string, conflictStrategy ...string) error {
 	logger := log.FromContext(ctx)
 	strategy := selectedConflictStrategy(conflictStrategy)
 	user, err := database.GetUserByChatID(ctx, userID)
@@ -204,9 +212,17 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 				})
 				return dispatcher.EndGroups
 			}
+			applyManualGroupKey(elem, manualGroupKey, file)
 			elems = append(elems, *elem)
 		} else {
-			groupId, isGroup := file.Message().GetGroupedID()
+			var groupId int64
+			isGroup := false
+			if manualGroupKey != "" {
+				groupId = 1
+				isGroup = true
+			} else if file.Message() != nil {
+				groupId, isGroup = file.Message().GetGroupedID()
+			}
 			if !isGroup || groupId == 0 {
 				logger.Warnf("File %s is not in a group, skipping album handling", file.Name())
 				continue
@@ -257,12 +273,13 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 				})
 				return dispatcher.EndGroups
 			}
+			applyManualGroupKey(elem, manualGroupKey, af.file)
 			elems = append(elems, *elem)
 		}
 	}
 
 	if strategy == tcbdata.ConflictStrategyAsk && len(conflicts) > 0 {
-		return promptTGFileConflictStrategy(ctx, userID, stor.Name(), dirPath, files, true, conflicts, trackMsgID)
+		return promptTGFileConflictStrategy(ctx, userID, stor.Name(), dirPath, files, true, conflicts, trackMsgID, manualGroupKey)
 	}
 
 	injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
@@ -292,7 +309,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 		return dispatcher.EndGroups
 	}
 	queueLength := core.GetLength(injectCtx)
-	logger.Debug("Added batch Telegram file task", "task_id", taskid, "user_id", userID, "files", len(elems), "queue_length", queueLength)
+	logger.Debug("Added batch Telegram file task", "task_id", taskid, "user_id", userID, "files", len(elems), "queue_length", queueLength, "manual_group_key", manualGroupKey)
 	ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
 		ID:          trackMsgID,
 		Message:     buildBatchAddedMessage(len(elems), skipped, queueLength),
@@ -301,7 +318,18 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 	return dispatcher.EndGroups
 }
 
-func promptTGFileConflictStrategy(ctx *ext.Context, userID int64, storageName, dirPath string, files []tfile.TGFileMessage, asBatch bool, conflicts []string, trackMsgID int) error {
+func applyManualGroupKey(elem *batchtfile.TaskElement, manualGroupKey string, file tfile.TGFileMessage) {
+	if elem == nil || manualGroupKey == "" {
+		return
+	}
+	caption := ""
+	if file.Message() != nil {
+		caption = file.Message().GetMessage()
+	}
+	elem.SetSourceMetadata(manualGroupKey, caption, true)
+}
+
+func promptTGFileConflictStrategy(ctx *ext.Context, userID int64, storageName, dirPath string, files []tfile.TGFileMessage, asBatch bool, conflicts []string, trackMsgID int, manualGroupKey string) error {
 	markup, err := msgelem.BuildConflictStrategyMarkup(tcbdata.Add{
 		TaskType:         tasktype.TaskTypeTgfiles,
 		SelectedStorName: storageName,
@@ -309,6 +337,7 @@ func promptTGFileConflictStrategy(ctx *ext.Context, userID int64, storageName, d
 		SelectedDirPath:  dirPath,
 		Files:            files,
 		AsBatch:          asBatch,
+		ManualGroupKey:   manualGroupKey,
 	})
 	if err != nil {
 		return err

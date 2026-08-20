@@ -50,6 +50,7 @@ func handleAddCallback(ctx *ext.Context, update *ext.Update) error {
 		"storage", data.SelectedStorName,
 		"files", len(data.Files),
 		"as_batch", data.AsBatch,
+		"manual_group_key", data.ManualGroupKey,
 		"set_dir", data.SettedDir,
 	)
 
@@ -101,8 +102,11 @@ func handleAddCallback(ctx *ext.Context, update *ext.Update) error {
 
 	switch data.TaskType {
 	case tasktype.TaskTypeTgfiles:
-		logger.Debug("Creating Telegram file task from add callback", "user_id", userID, "msg_id", msgID, "files", len(data.Files), "as_batch", data.AsBatch, "storage", selectedStorage.Name())
+		logger.Debug("Creating Telegram file task from add callback", "user_id", userID, "msg_id", msgID, "files", len(data.Files), "as_batch", data.AsBatch, "storage", selectedStorage.Name(), "manual_group_key", data.ManualGroupKey)
 		if data.AsBatch {
+			if data.ManualGroupKey != "" {
+				return shortcut.CreateAndAddMergedBatchTGFileTaskWithEdit(ctx, userID, selectedStorage, dirPath, data.Files, msgID, data.ManualGroupKey, data.ConflictStrategy)
+			}
 			return shortcut.CreateAndAddBatchTGFileTaskWithEdit(ctx, userID, selectedStorage, dirPath, data.Files, msgID, data.ConflictStrategy)
 		}
 		return shortcut.CreateAndAddTGFileTaskWithEdit(ctx, userID, selectedStorage, dirPath, data.Files[0], msgID, data.ConflictStrategy)
