@@ -80,18 +80,22 @@ bot:
       Use /watch to watch messages in a chat and automatically save them to the default storage, following storage rules.
 
       Syntax:
-      /watch <chat_id> [filter]
+      /watch <chat_id> [filter] [group:soft] [window:8s] [max:10]
 
       Parameters:
       - <chat_id>: Chat ID or username
       - [filter]: Optional, format is filter_type:expression , see docs for all supported filters
+      - group:soft: Optional, group loose photos/videos from the same sender within a time window
+      - window:8s: Optional, soft grouping wait window, default 8s
+      - max:10: Optional, at most 10 media items per group
 
       Example:
       /watch -1002229835658 msgre:.*plana.*
       /watch -1002229835658 from:@Luscious_Yana,@another_user
+      /watch -1002229835658 from:@Luscious_Yana group:soft window:8s max:10
 
       This will watch chat with ID -1002229835658 and save media messages containing "plana" or sent by the specified users.
-      Media groups from the same sender are saved as batch tasks; Telegram storage will try to preserve them as album messages.
+      Original media groups are saved as batch tasks; with group:soft enabled, loose photos/videos are grouped by sender and time window. Telegram storage will try to preserve them as album messages.
     common:
       cancel_button_text: "Cancel"
       error_invalid_regex: "Invalid regex: {{.Error}}"

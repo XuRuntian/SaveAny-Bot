@@ -34,11 +34,28 @@ import (
 const (
 	watchFilterMsgRegex = "msgre"
 	watchFilterFrom     = "from"
+	watchGroupSoft      = "soft"
 )
+
+const (
+	defaultWatchSoftGroupWindowSeconds = 8
+	defaultWatchSoftGroupMax           = 10
+	minWatchSoftGroupWindowSeconds     = 1
+	maxWatchSoftGroupWindowSeconds     = 60
+	minWatchSoftGroupMax               = 2
+	maxWatchSoftGroupMax               = 10
+)
+
+type watchOptions struct {
+	filter             string
+	groupMode          string
+	groupWindowSeconds int
+	groupMax           int
+}
 
 func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 	logger := log.FromContext(ctx)
-	args := strings.Split(update.EffectiveMessage.Text, " ")
+	args := strings.Fields(update.EffectiveMessage.Text)
 	if len(args) < 2 {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchHelpText)), nil)
 		return dispatcher.EndGroups
@@ -69,39 +86,18 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoAlreadyWatchingChat)), nil)
 		return dispatcher.EndGroups
 	}
-	filter := ""
-	if len(args) > 2 {
-		filterArg := strings.Join(args[2:], " ")
-		filterType, filterData, ok := strings.Cut(filterArg, ":")
-		filterType = strings.TrimSpace(filterType)
-		if !ok || filterType == "" || strings.TrimSpace(filterData) == "" {
-			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
-			return dispatcher.EndGroups
-		}
-		switch filterType {
-		case watchFilterMsgRegex:
-			_, err := regexp.Compile(filterData)
-			if err != nil {
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": err.Error()})), nil)
-				return dispatcher.EndGroups
-			}
-			filter = filterType + ":" + filterData
-		case watchFilterFrom:
-			senderIDs, err := resolveWatchFilterSenderIDs(ctx, filterData)
-			if err != nil {
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
-				return dispatcher.EndGroups
-			}
-			filter = filterType + ":" + formatWatchFilterSenderIDs(senderIDs)
-		default:
-			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterTypeUnsupported)), nil)
-			return dispatcher.EndGroups
-		}
+	options, err := parseWatchOptions(ctx, args[2:])
+	if err != nil {
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
+		return dispatcher.EndGroups
 	}
 	if err := user.WatchChat(ctx, database.WatchChat{
-		UserID: user.ID,
-		ChatID: chatID,
-		Filter: filter,
+		UserID:             user.ID,
+		ChatID:             chatID,
+		Filter:             options.filter,
+		GroupMode:          options.groupMode,
+		GroupWindowSeconds: options.groupWindowSeconds,
+		GroupMax:           options.groupMax,
 	}); err != nil {
 		logger.Errorf("Failed to watch chat %d: %s", chatID, err)
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorWatchChatFailed, map[string]any{"Error": err.Error()})), nil)
@@ -109,6 +105,94 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoWatchChatStarted, map[string]any{"Chat": chatArg})), nil)
 	return dispatcher.EndGroups
+}
+
+func parseWatchOptions(ctx *ext.Context, args []string) (watchOptions, error) {
+	options := watchOptions{}
+	for _, arg := range args {
+		optionType, optionData, ok := strings.Cut(arg, ":")
+		optionType = strings.TrimSpace(optionType)
+		optionData = strings.TrimSpace(optionData)
+		if !ok || optionType == "" || optionData == "" {
+			return options, fmt.Errorf("invalid watch option %q", arg)
+		}
+		switch optionType {
+		case watchFilterMsgRegex:
+			if options.filter != "" {
+				return options, fmt.Errorf("only one watch filter is supported")
+			}
+			if _, err := regexp.Compile(optionData); err != nil {
+				return options, fmt.Errorf("invalid regex filter: %w", err)
+			}
+			options.filter = optionType + ":" + optionData
+		case watchFilterFrom:
+			if options.filter != "" {
+				return options, fmt.Errorf("only one watch filter is supported")
+			}
+			senderIDs, err := resolveWatchFilterSenderIDs(ctx, optionData)
+			if err != nil {
+				return options, err
+			}
+			options.filter = optionType + ":" + formatWatchFilterSenderIDs(senderIDs)
+		case "group":
+			if optionData != watchGroupSoft {
+				return options, fmt.Errorf("unsupported group mode %q", optionData)
+			}
+			options.groupMode = watchGroupSoft
+		case "window":
+			seconds, err := parseWatchGroupWindowSeconds(optionData)
+			if err != nil {
+				return options, err
+			}
+			options.groupWindowSeconds = seconds
+		case "max":
+			maxItems, err := strconv.Atoi(optionData)
+			if err != nil {
+				return options, fmt.Errorf("invalid group max: %w", err)
+			}
+			if maxItems < minWatchSoftGroupMax || maxItems > maxWatchSoftGroupMax {
+				return options, fmt.Errorf("group max must be between %d and %d", minWatchSoftGroupMax, maxWatchSoftGroupMax)
+			}
+			options.groupMax = maxItems
+		default:
+			return options, fmt.Errorf("unsupported watch option %q", optionType)
+		}
+	}
+	if options.groupMode == "" {
+		if options.groupWindowSeconds != 0 || options.groupMax != 0 {
+			return options, fmt.Errorf("window/max require group:soft")
+		}
+		return options, nil
+	}
+	if options.groupWindowSeconds == 0 {
+		options.groupWindowSeconds = defaultWatchSoftGroupWindowSeconds
+	}
+	if options.groupMax == 0 {
+		options.groupMax = defaultWatchSoftGroupMax
+	}
+	return options, nil
+}
+
+func parseWatchGroupWindowSeconds(data string) (int, error) {
+	if seconds, err := strconv.Atoi(data); err == nil {
+		return validateWatchGroupWindowSeconds(seconds)
+	}
+	duration, err := time.ParseDuration(data)
+	if err != nil {
+		return 0, fmt.Errorf("invalid group window: %w", err)
+	}
+	seconds := int(duration / time.Second)
+	if time.Duration(seconds)*time.Second != duration {
+		return 0, fmt.Errorf("group window must be whole seconds")
+	}
+	return validateWatchGroupWindowSeconds(seconds)
+}
+
+func validateWatchGroupWindowSeconds(seconds int) (int, error) {
+	if seconds < minWatchSoftGroupWindowSeconds || seconds > maxWatchSoftGroupWindowSeconds {
+		return 0, fmt.Errorf("group window must be between %ds and %ds", minWatchSoftGroupWindowSeconds, maxWatchSoftGroupWindowSeconds)
+	}
+	return seconds, nil
 }
 
 func resolveWatchFilterSenderIDs(ctx *ext.Context, idsOrUsernames string) ([]int64, error) {
@@ -176,6 +260,9 @@ func handleLswatchCmd(ctx *ext.Context, update *ext.Update) error {
 			sb.WriteString(chat.Filter)
 			sb.WriteString(")")
 		}
+		if chat.GroupMode == watchGroupSoft {
+			sb.WriteString(fmt.Sprintf(" (group:%s window:%ds max:%d)", chat.GroupMode, watchGroupWindowSeconds(&chat), watchGroupMax(&chat)))
+		}
 		sb.WriteString("\n")
 	}
 	ctx.Reply(update, ext.ReplyTextString(sb.String()), nil)
@@ -184,7 +271,7 @@ func handleLswatchCmd(ctx *ext.Context, update *ext.Update) error {
 
 func handleUnwatchCmd(ctx *ext.Context, update *ext.Update) error {
 	logger := log.FromContext(ctx)
-	args := strings.Split(update.EffectiveMessage.Text, " ")
+	args := strings.Fields(update.EffectiveMessage.Text)
 	if len(args) < 2 {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorUnwatchNoChatProvided)), nil)
 		return dispatcher.EndGroups
@@ -216,6 +303,7 @@ type watchMediaGroupKey struct {
 	userID   uint
 	senderID int64
 	groupID  int64
+	soft     bool
 }
 
 type watchMediaGroupHandler struct {
@@ -229,15 +317,30 @@ var watchMediaGroupMgr = &watchMediaGroupHandler{
 	timers: make(map[watchMediaGroupKey]*time.Timer),
 }
 
-func (w *watchMediaGroupHandler) addFile(key watchMediaGroupKey, file tfile.TGFileMessage, timeout time.Duration, callback func([]tfile.TGFileMessage)) {
+func (w *watchMediaGroupHandler) addFile(
+	key watchMediaGroupKey,
+	file tfile.TGFileMessage,
+	timeout time.Duration,
+	maxItems int,
+	callback func([]tfile.TGFileMessage),
+) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	if timer, exists := w.timers[key]; exists {
 		timer.Stop()
 	}
 
 	w.groups[key] = append(w.groups[key], file)
+	if maxItems > 0 && len(w.groups[key]) >= maxItems {
+		files := w.groups[key]
+		delete(w.groups, key)
+		delete(w.timers, key)
+		w.mu.Unlock()
+		if len(files) > 0 {
+			callback(files)
+		}
+		return
+	}
 
 	w.timers[key] = time.AfterFunc(timeout, func() {
 		w.mu.Lock()
@@ -250,6 +353,21 @@ func (w *watchMediaGroupHandler) addFile(key watchMediaGroupKey, file tfile.TGFi
 			callback(files)
 		}
 	})
+	w.mu.Unlock()
+}
+
+func watchGroupWindowSeconds(chat *database.WatchChat) int {
+	if chat.GroupWindowSeconds > 0 {
+		return chat.GroupWindowSeconds
+	}
+	return defaultWatchSoftGroupWindowSeconds
+}
+
+func watchGroupMax(chat *database.WatchChat) int {
+	if chat.GroupMax > 0 {
+		return chat.GroupMax
+	}
+	return defaultWatchSoftGroupMax
 }
 
 func watchFilterMatches(filter, msgText string, senderID int64) (bool, error) {
@@ -374,8 +492,22 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 					senderID: senderID,
 					groupID:  groupID,
 				}
-				watchMediaGroupMgr.addFile(key, file, time.Duration(max(config.C().Telegram.MediaGroupTimeout, 1))*time.Second, func(files []tfile.TGFileMessage) {
+				watchMediaGroupMgr.addFile(key, file, time.Duration(max(config.C().Telegram.MediaGroupTimeout, 1))*time.Second, 0, func(files []tfile.TGFileMessage) {
 					processWatchMediaGroup(ctx, user, stor, defaultDirPath, files)
+				})
+				continue
+			}
+			if chat.GroupMode == watchGroupSoft {
+				key := watchMediaGroupKey{
+					chatID:   event.ChatID,
+					userID:   user.ID,
+					senderID: senderID,
+					soft:     true,
+				}
+				window := time.Duration(watchGroupWindowSeconds(chat)) * time.Second
+				maxItems := watchGroupMax(chat)
+				watchMediaGroupMgr.addFile(key, file, window, maxItems, func(files []tfile.TGFileMessage) {
+					processWatchSoftMediaGroup(ctx, user, stor, defaultDirPath, event.ChatID, senderID, files)
 				})
 				continue
 			}
@@ -413,7 +545,42 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 	}
 }
 
+type watchBatchOptions struct {
+	sourceGroupKey       string
+	requireTelegramGroup bool
+}
+
 func processWatchMediaGroup(ctx *ext.Context, user *database.User, stor storage.Storage, dirPath string, files []tfile.TGFileMessage) {
+	processWatchFileBatch(ctx, user, stor, dirPath, files, watchBatchOptions{requireTelegramGroup: true})
+}
+
+func processWatchSoftMediaGroup(
+	ctx *ext.Context,
+	user *database.User,
+	stor storage.Storage,
+	dirPath string,
+	sourceChatID int64,
+	senderID int64,
+	files []tfile.TGFileMessage,
+) {
+	if len(files) == 0 {
+		return
+	}
+	sort.SliceStable(files, func(i, j int) bool {
+		return files[i].Message().GetID() < files[j].Message().GetID()
+	})
+	groupKey := fmt.Sprintf("watch-soft:%d:%d:%d:%d", sourceChatID, user.ID, senderID, files[0].Message().GetID())
+	processWatchFileBatch(ctx, user, stor, dirPath, files, watchBatchOptions{sourceGroupKey: groupKey})
+}
+
+func processWatchFileBatch(
+	ctx *ext.Context,
+	user *database.User,
+	stor storage.Storage,
+	dirPath string,
+	files []tfile.TGFileMessage,
+	options watchBatchOptions,
+) {
 	logger := log.FromContext(ctx)
 	if len(files) == 0 {
 		return
@@ -455,7 +622,7 @@ func processWatchMediaGroup(ctx *ext.Context, user *database.User, stor storage.
 		}
 
 		groupId, isGroup := file.Message().GetGroupedID()
-		if !isGroup || groupId == 0 {
+		if options.requireTelegramGroup && (!isGroup || groupId == 0) {
 			logger.Warnf("File %s is not in a group, skipping", file.Name())
 			continue
 		}
@@ -469,6 +636,13 @@ func processWatchMediaGroup(ctx *ext.Context, user *database.User, stor storage.
 		if err != nil {
 			logger.Errorf("create batch task element failed for watch media group: %s", err)
 			continue
+		}
+		if options.sourceGroupKey != "" {
+			caption := ""
+			if file.Message() != nil {
+				caption = file.Message().GetMessage()
+			}
+			elem.SetSourceMetadata(options.sourceGroupKey, caption, true)
 		}
 		elems = append(elems, *elem)
 	}

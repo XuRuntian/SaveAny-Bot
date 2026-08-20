@@ -21,9 +21,12 @@ type User struct {
 
 type WatchChat struct {
 	gorm.Model
-	UserID uint // User's database ID (not chat ID)
-	ChatID int64
-	Filter string
+	UserID             uint // User's database ID (not chat ID)
+	ChatID             int64
+	Filter             string
+	GroupMode          string
+	GroupWindowSeconds int
+	GroupMax           int
 }
 
 type Dir struct {

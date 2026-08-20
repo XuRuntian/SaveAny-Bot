@@ -81,18 +81,22 @@ bot:
       使用 /watch 命令监听一个聊天的消息, 并自动保存到默认存储中, 遵从存储规则.
 
       命令语法:
-      /watch <chat_id> [filter]
+      /watch <chat_id> [filter] [group:soft] [window:8s] [max:10]
 
       参数:
       - <chat_id>: 聊天的 ID 或用户名
       - [filter]: 可选, 格式为 过滤器类型:表达式 , 所有支持类型的过滤器请查看文档
+      - group:soft: 可选, 将同一发送者连续发送的散图/视频按时间窗口合并
+      - window:8s: 可选, 软分组等待窗口, 默认 8s
+      - max:10: 可选, 每组最多 10 个媒体
 
       命令示例:
       /watch -1002229835658 msgre:.*plana.*
       /watch -1002229835658 from:@Luscious_Yana,@another_user
+      /watch -1002229835658 from:@Luscious_Yana group:soft window:8s max:10
 
       这将监听 ID 为 -1002229835658 的聊天, 并转存所有包含 "plana" 或来自指定用户的媒体消息
-      来自同一发送者的媒体组会作为批量任务保存; 使用 Telegram 存储时会尽量保留为相册消息
+      原始媒体组会作为批量任务保存; 开启 group:soft 后, 散图/视频也会按同一发送者和时间窗口合并; 使用 Telegram 存储时会尽量保留为相册消息
     common:
       cancel_button_text: "取消任务"
       error_invalid_regex: "无效的正则表达式: {{.Error}}"
