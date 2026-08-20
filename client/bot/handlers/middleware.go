@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
@@ -36,7 +38,7 @@ func withPermission(handler func(*ext.Context, *ext.Update) error) func(*ext.Con
 				"data", string(update.CallbackQuery.Data),
 			)
 		}
-		if err := checkPermission(ctx, update); err != nil {
+		if err := checkPermission(ctx, update); err != nil && !errors.Is(err, dispatcher.ContinueGroups) {
 			return err
 		}
 		return handler(ctx, update)
