@@ -73,6 +73,7 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 		logger.Warn("no matched message links but called handleMessageLink")
 		return nil, nil, nil, dispatcher.EndGroups
 	}
+	logger.Debug("Handling Telegram message links", "count", len(msgLinks), "links", strings.Join(msgLinks, ","))
 	replied, err = ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonInfoFetchingMessages, nil)), nil)
 	if err != nil {
 		logger.Errorf("failed to reply: %s", err)
@@ -98,7 +99,7 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 	files = make([]tfile.TGFileMessage, 0, len(msgLinks))
 	addFile := func(client downloader.Client, msg *tg.Message) {
 		if msg == nil || msg.Media == nil {
-			logger.Warn("message is nil, skipping")
+			logger.Warn("message has no media, skipping")
 			return
 		}
 		media, ok := msg.GetMedia()
@@ -106,6 +107,13 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 			logger.Debugf("message %d has no media", msg.GetID())
 			return
 		}
+		logger.Debug("Creating file from linked message", "message_id", msg.GetID(), "media_type", media.TypeName(), "grouped_id", func() int64 {
+			groupID, ok := msg.GetGroupedID()
+			if !ok {
+				return 0
+			}
+			return groupID
+		}())
 		opts := mediautil.TfileOptions(ctx, user, msg)
 		file, err := tfile.FromMediaMessage(media, client, msg, opts...)
 		if err != nil {
@@ -133,13 +141,16 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 			logger.Errorf("failed to parse message link %s: %s", link, err)
 			continue
 		}
+		logger.Debug("Parsed Telegram message link", "link", link, "chat_id", chatId, "message_id", msgId)
 		msg, err := tgutil.GetMessageByID(tctx, chatId, msgId)
 		if err != nil {
 			logger.Error(err)
 			continue
 		}
+		logger.Debug("Fetched linked Telegram message", "link", link, "chat_id", chatId, "message_id", msg.GetID(), "has_media", msg.Media != nil, "message_text_len", len(msg.GetMessage()))
 		groupID, isGroup := msg.GetGroupedID()
 		if isGroup && groupID != 0 && !linkUrl.Query().Has("single") {
+			logger.Debug("Linked Telegram message is grouped", "link", link, "group_id", groupID)
 			gmsgs, err := tgutil.GetGroupedMessages(tctx, chatId, msg)
 			if err != nil {
 				logger.Errorf("failed to get grouped messages: %s", err)
@@ -153,9 +164,11 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 		}
 	}
 	if len(files) == 0 {
+		logger.Warn("No savable files found in Telegram message links", "links", strings.Join(msgLinks, ","))
 		editReplied(i18n.T(i18nk.BotMsgCommonErrorNoSavableFilesFound, nil), nil)
 		return nil, nil, nil, dispatcher.EndGroups
 	}
+	logger.Debug("Finished handling Telegram message links", "file_count", len(files))
 	return replied, files, editReplied, nil
 }
 
