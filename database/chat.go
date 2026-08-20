@@ -17,7 +17,7 @@ func (user *User) WatchChat(ctx context.Context, chat WatchChat) error {
 
 func (user *User) UnwatchChat(ctx context.Context, chatID int64) error {
 	var watchChat WatchChat
-	err := db.WithContext(ctx).Where("chat_id = ? AND user_id = ?", chatID, user.ID).First(&watchChat).Error
+	err := db.WithContext(ctx).Where("chat_id IN ? AND user_id = ?", watchChatIDCandidates(chatID), user.ID).First(&watchChat).Error
 	if err != nil {
 		return err
 	}
@@ -26,7 +26,7 @@ func (user *User) UnwatchChat(ctx context.Context, chatID int64) error {
 
 func (user *User) WatchingChat(ctx context.Context, chatID int64) (bool, error) {
 	var count int64
-	err := db.WithContext(ctx).Model(&WatchChat{}).Where("chat_id = ? AND user_id = ?", chatID, user.ID).Count(&count).Error
+	err := db.WithContext(ctx).Model(&WatchChat{}).Where("chat_id IN ? AND user_id = ?", watchChatIDCandidates(chatID), user.ID).Count(&count).Error
 	if err != nil {
 		return false, err
 	}

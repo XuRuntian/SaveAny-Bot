@@ -412,7 +412,6 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 	}
 	logger := log.FromContext(userclient.GetCtx())
 	for event := range ch {
-		logger.Debug("Received media message event", "chat_id", event.ChatID, "file_name", event.File.Name())
 		ctx := event.Ctx
 		file := event.File
 		chats, err := database.GetWatchChatsByChatID(ctx, event.ChatID)
@@ -425,6 +424,17 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 		if fromID, ok := event.File.Message().GetFromID(); ok {
 			senderID = tgutil.ChatIdFromPeer(fromID)
 		}
+		groupID, isGroup := event.File.Message().GetGroupedID()
+		logger.Debug(
+			"Received media message event",
+			"chat_id", event.ChatID,
+			"sender_id", senderID,
+			"message_id", event.File.Message().GetID(),
+			"grouped", isGroup,
+			"group_id", groupID,
+			"watch_matches", len(chats),
+			"file_name", event.File.Name(),
+		)
 		for _, chat := range chats {
 			if chat.Filter != "" {
 				matched, err := watchFilterMatches(chat.Filter, msgText, senderID)
@@ -433,6 +443,7 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 					continue
 				}
 				if !matched {
+					logger.Debug("Watch filter did not match", "watch_id", chat.ID, "chat_id", chat.ChatID, "filter", chat.Filter, "sender_id", senderID)
 					continue
 				}
 			}
@@ -484,7 +495,6 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 				file.SetName(sb.String())
 			}
 
-			groupID, isGroup := file.Message().GetGroupedID()
 			if isGroup && groupID != 0 {
 				key := watchMediaGroupKey{
 					chatID:   event.ChatID,
