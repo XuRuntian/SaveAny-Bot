@@ -1,6 +1,7 @@
 package batchtfile
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -53,5 +54,12 @@ func TestSourceMetadataPreservesAlbumIdentityAndCaption(t *testing.T) {
 	}
 	if !preserveCaption {
 		t.Fatal("preserveCaption = false, want true")
+	}
+}
+
+func TestNewBatchTGFileTaskDefaultsNilProgress(t *testing.T) {
+	task := NewBatchTGFileTask("task-id", context.Background(), nil, nil, true)
+	if task.Progress == nil {
+		t.Fatal("Progress = nil, want noop progress")
 	}
 }

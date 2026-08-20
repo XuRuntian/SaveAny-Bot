@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
+	"github.com/krau/SaveAny-Bot/core/tasks/batchtfile"
 	coretfile "github.com/krau/SaveAny-Bot/core/tasks/tfile"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/fnamest"
@@ -209,45 +211,39 @@ func handleUnwatchCmd(ctx *ext.Context, update *ext.Update) error {
 	return dispatcher.EndGroups
 }
 
+type watchMediaGroupKey struct {
+	chatID   int64
+	userID   uint
+	senderID int64
+	groupID  int64
+}
+
 type watchMediaGroupHandler struct {
-	groups map[int64]map[uint][]tfile.TGFileMessage // chatID -> userID -> files
-	timers map[int64]map[uint]*time.Timer
+	groups map[watchMediaGroupKey][]tfile.TGFileMessage
+	timers map[watchMediaGroupKey]*time.Timer
 	mu     sync.Mutex
 }
 
 var watchMediaGroupMgr = &watchMediaGroupHandler{
-	groups: make(map[int64]map[uint][]tfile.TGFileMessage),
-	timers: make(map[int64]map[uint]*time.Timer),
+	groups: make(map[watchMediaGroupKey][]tfile.TGFileMessage),
+	timers: make(map[watchMediaGroupKey]*time.Timer),
 }
 
-func (w *watchMediaGroupHandler) addFile(chatID int64, userID uint, file tfile.TGFileMessage, timeout time.Duration, callback func([]tfile.TGFileMessage)) {
+func (w *watchMediaGroupHandler) addFile(key watchMediaGroupKey, file tfile.TGFileMessage, timeout time.Duration, callback func([]tfile.TGFileMessage)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.groups[chatID] == nil {
-		w.groups[chatID] = make(map[uint][]tfile.TGFileMessage)
-	}
-	if w.timers[chatID] == nil {
-		w.timers[chatID] = make(map[uint]*time.Timer)
-	}
-
-	if timer, exists := w.timers[chatID][userID]; exists {
+	if timer, exists := w.timers[key]; exists {
 		timer.Stop()
 	}
 
-	w.groups[chatID][userID] = append(w.groups[chatID][userID], file)
+	w.groups[key] = append(w.groups[key], file)
 
-	w.timers[chatID][userID] = time.AfterFunc(timeout, func() {
+	w.timers[key] = time.AfterFunc(timeout, func() {
 		w.mu.Lock()
-		files := w.groups[chatID][userID]
-		delete(w.groups[chatID], userID)
-		delete(w.timers[chatID], userID)
-		if len(w.groups[chatID]) == 0 {
-			delete(w.groups, chatID)
-		}
-		if len(w.timers[chatID]) == 0 {
-			delete(w.timers, chatID)
-		}
+		files := w.groups[key]
+		delete(w.groups, key)
+		delete(w.timers, key)
 		w.mu.Unlock()
 
 		if len(files) > 0 {
@@ -370,23 +366,20 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 				file.SetName(sb.String())
 			}
 
-			// Check if this is a media group and if rules specify NEW-FOR-ALBUM
 			groupID, isGroup := file.Message().GetGroupedID()
-			needAlbumHandling := false
-			if isGroup && groupID != 0 && user.ApplyRule && user.Rules != nil {
-				_, _, matchedDirPath := ruleutil.ApplyRule(ctx, user.Rules, ruleutil.NewInput(file))
-				needAlbumHandling = matchedDirPath.NeedNewForAlbum()
-			}
-
-			if needAlbumHandling {
-				// For media groups with NEW-FOR-ALBUM rule, collect all files of the same group
-				watchMediaGroupMgr.addFile(event.ChatID, user.ID, file, time.Duration(max(config.C().Telegram.MediaGroupTimeout, 1))*time.Second, func(files []tfile.TGFileMessage) {
+			if isGroup && groupID != 0 {
+				key := watchMediaGroupKey{
+					chatID:   event.ChatID,
+					userID:   user.ID,
+					senderID: senderID,
+					groupID:  groupID,
+				}
+				watchMediaGroupMgr.addFile(key, file, time.Duration(max(config.C().Telegram.MediaGroupTimeout, 1))*time.Second, func(files []tfile.TGFileMessage) {
 					processWatchMediaGroup(ctx, user, stor, defaultDirPath, files)
 				})
 				continue
 			}
 
-			// Process single file or media group without album folder creation
 			dirPath := defaultDirPath
 			if user.ApplyRule && user.Rules != nil {
 				matched, matchedStorageName, matchedDirPath := ruleutil.ApplyRule(ctx, user.Rules, ruleutil.NewInput(file))
@@ -443,14 +436,12 @@ func processWatchMediaGroup(ctx *ext.Context, user *database.User, stor storage.
 		return storname, dirP
 	}
 
-	type albumFile struct {
-		file    tfile.TGFileMessage
-		storage storage.Storage
-		dirPath string
-	}
-	albumFiles := make(map[int64][]albumFile)
+	sort.SliceStable(files, func(i, j int) bool {
+		return files[i].Message().GetID() < files[j].Message().GetID()
+	})
 
-	// Collect files by group ID
+	albumDir := strings.TrimSuffix(path.Base(files[0].Name()), path.Ext(files[0].Name()))
+	elems := make([]batchtfile.TaskElement, 0, len(files))
 	for _, file := range files {
 		storName, ruleDirPath := applyRule(file)
 		fileStor := stor
@@ -469,51 +460,29 @@ func processWatchMediaGroup(ctx *ext.Context, user *database.User, stor storage.
 			continue
 		}
 
-		// Use the effective dirPath: if rule returns NEW-FOR-ALBUM sentinel, fall back to the
-		// base dirPath passed in (which is defaultDirPath from the caller).
 		effectiveDirPath := string(ruleDirPath)
 		if ruleDirPath.NeedNewForAlbum() {
-			effectiveDirPath = dirPath
+			effectiveDirPath = path.Join(dirPath, albumDir)
 		}
 
-		if _, ok := albumFiles[groupId]; !ok {
-			albumFiles[groupId] = make([]albumFile, 0)
-		}
-		albumFiles[groupId] = append(albumFiles[groupId], albumFile{
-			file:    file,
-			storage: fileStor,
-			dirPath: effectiveDirPath,
-		})
-	}
-
-	// Process album files with folder creation
-	injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
-	totalTasks := 0
-	for groupID, afiles := range albumFiles {
-		if len(afiles) <= 1 {
+		elem, err := batchtfile.NewTaskElement(fileStor, path.Join(effectiveDirPath, file.Name()), file)
+		if err != nil {
+			logger.Errorf("create batch task element failed for watch media group: %s", err)
 			continue
 		}
-
-		// Use first file's name (without extension) as album folder name
-		albumDir := strings.TrimSuffix(path.Base(afiles[0].file.Name()), path.Ext(afiles[0].file.Name()))
-		albumStor := afiles[0].storage
-
-		logger.Infof("Creating album folder for group %d: %s with %d files", groupID, albumDir, len(afiles))
-
-		for _, af := range afiles {
-			afstorPath := path.Join(af.dirPath, albumDir, af.file.Name())
-			taskid := xid.New().String()
-			task, err := coretfile.NewTGFileTask(taskid, injectCtx, af.file, albumStor, afstorPath, nil)
-			if err != nil {
-				logger.Errorf("create task failed for album file: %s", err)
-				continue
-			}
-			if err := core.AddTask(injectCtx, task); err != nil {
-				logger.Errorf("add task failed: %s", err)
-				continue
-			}
-			totalTasks++
-		}
+		elems = append(elems, *elem)
 	}
-	logger.Infof("Added %d watch media tasks for user %d", totalTasks, user.ChatID)
+
+	if len(elems) == 0 {
+		return
+	}
+
+	injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
+	taskid := xid.New().String()
+	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, nil, true)
+	if err := core.AddTask(injectCtx, task); err != nil {
+		logger.Errorf("add watch media group task failed: %s", err)
+		return
+	}
+	logger.Infof("Added watch media group task for user %d with %d files", user.ChatID, len(elems))
 }

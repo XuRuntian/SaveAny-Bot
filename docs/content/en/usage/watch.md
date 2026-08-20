@@ -11,6 +11,8 @@ This feature requires enabling UserBot integration.
 
 You can watch messages in a specific chat and automatically save them to the default storage, following storage rules. You can also add filters so that only matching messages are saved.
 
+Media groups sent by the same sender are saved as batch tasks. If the target is Telegram storage, the bot will try to preserve photos/videos as album messages.
+
 Watch a chat:
 
 ```

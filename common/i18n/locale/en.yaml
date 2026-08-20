@@ -91,6 +91,7 @@ bot:
       /watch -1002229835658 from:@Luscious_Yana,@another_user
 
       This will watch chat with ID -1002229835658 and save media messages containing "plana" or sent by the specified users.
+      Media groups from the same sender are saved as batch tasks; Telegram storage will try to preserve them as album messages.
     common:
       cancel_button_text: "Cancel"
       error_invalid_regex: "Invalid regex: {{.Error}}"

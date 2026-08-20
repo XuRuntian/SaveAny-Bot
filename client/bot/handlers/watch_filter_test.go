@@ -1,6 +1,13 @@
 package handlers
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/gotd/td/telegram/downloader"
+	"github.com/gotd/td/tg"
+	"github.com/krau/SaveAny-Bot/pkg/tfile"
+)
 
 func TestWatchFilterMatches(t *testing.T) {
 	tests := []struct {
@@ -94,3 +101,52 @@ func TestWatchFilterMatches(t *testing.T) {
 		})
 	}
 }
+
+func TestWatchMediaGroupHandlerSeparatesGroupKeys(t *testing.T) {
+	handler := &watchMediaGroupHandler{
+		groups: make(map[watchMediaGroupKey][]tfile.TGFileMessage),
+		timers: make(map[watchMediaGroupKey]*time.Timer),
+	}
+	key := watchMediaGroupKey{chatID: 1, userID: 2, senderID: 3, groupID: 4}
+	otherSender := watchMediaGroupKey{chatID: 1, userID: 2, senderID: 9, groupID: 4}
+	results := make(chan []tfile.TGFileMessage, 2)
+
+	handler.addFile(key, fakeWatchFile("a.jpg", 1), time.Millisecond, func(files []tfile.TGFileMessage) {
+		results <- files
+	})
+	handler.addFile(key, fakeWatchFile("b.jpg", 2), time.Millisecond, func(files []tfile.TGFileMessage) {
+		results <- files
+	})
+	handler.addFile(otherSender, fakeWatchFile("c.jpg", 3), time.Millisecond, func(files []tfile.TGFileMessage) {
+		results <- files
+	})
+
+	gotSizes := map[int]int{}
+	for range 2 {
+		select {
+		case files := <-results:
+			gotSizes[len(files)]++
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for media group callbacks")
+		}
+	}
+	if gotSizes[2] != 1 || gotSizes[1] != 1 {
+		t.Fatalf("callback batch sizes = %v, want one 2-file batch and one 1-file batch", gotSizes)
+	}
+}
+
+type fakeTGFileMessage struct {
+	name string
+	msg  *tg.Message
+}
+
+func fakeWatchFile(name string, messageID int) tfile.TGFileMessage {
+	return &fakeTGFileMessage{name: name, msg: &tg.Message{ID: messageID}}
+}
+
+func (f *fakeTGFileMessage) Location() tg.InputFileLocationClass { return nil }
+func (f *fakeTGFileMessage) Dler() downloader.Client             { return nil }
+func (f *fakeTGFileMessage) Size() int64                         { return 0 }
+func (f *fakeTGFileMessage) Name() string                        { return f.name }
+func (f *fakeTGFileMessage) SetName(name string)                 { f.name = name }
+func (f *fakeTGFileMessage) Message() *tg.Message                { return f.msg }

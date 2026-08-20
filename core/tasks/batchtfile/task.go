@@ -18,6 +18,16 @@ import (
 
 var _ core.Executable = (*Task)(nil)
 
+type noopProgress struct{}
+
+func (noopProgress) OnStart(context.Context, TaskInfo)              {}
+func (noopProgress) OnProgress(context.Context, TaskInfo)           {}
+func (noopProgress) OnDone(context.Context, TaskInfo, error)        {}
+func (noopProgress) OnStateChange(context.Context, TaskInfo)        {}
+func (noopProgress) OnUploadStart(context.Context, TaskInfo, int64) {}
+func (noopProgress) OnUploadProgress(context.Context, TaskInfo, int64, int64) {
+}
+
 type TaskElement struct {
 	ID              string
 	Storage         storage.Storage
@@ -115,6 +125,9 @@ func NewBatchTGFileTask(
 	progress ProgressTracker,
 	ignoreErrors bool,
 ) *Task {
+	if progress == nil {
+		progress = noopProgress{}
+	}
 	itemStates, itemIndex := newItemProgressStates(files)
 	task := &Task{
 		ID:         id,

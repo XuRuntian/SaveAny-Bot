@@ -92,6 +92,7 @@ bot:
       /watch -1002229835658 from:@Luscious_Yana,@another_user
 
       这将监听 ID 为 -1002229835658 的聊天, 并转存所有包含 "plana" 或来自指定用户的媒体消息
+      来自同一发送者的媒体组会作为批量任务保存; 使用 Telegram 存储时会尽量保留为相册消息
     common:
       cancel_button_text: "取消任务"
       error_invalid_regex: "无效的正则表达式: {{.Error}}"
