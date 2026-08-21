@@ -19,6 +19,11 @@ func TestMergeMessageLinksRequestedText(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "merge command glued to link",
+			text: "/mergehttps://t.me/example/1https://t.me/example/2",
+			want: true,
+		},
+		{
 			name: "merge command with bot username",
 			text: "/merge@saveanybot https://t.me/example/1",
 			want: true,

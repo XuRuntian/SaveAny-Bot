@@ -79,7 +79,7 @@ func MergeMessageLinksRequested(update *ext.Update) bool {
 
 func MergeMessageLinksRequestedText(text string) bool {
 	for _, field := range strings.Fields(strings.ToLower(text)) {
-		if field == mergeMessageLinksFlag || field == mergeMessageLinksCommand || strings.HasPrefix(field, mergeMessageLinksCommand+"@") {
+		if field == mergeMessageLinksFlag || field == mergeMessageLinksCommand || strings.HasPrefix(field, mergeMessageLinksCommand+"@") || strings.HasPrefix(field, mergeMessageLinksCommand+"http") {
 			return true
 		}
 	}
@@ -96,7 +96,7 @@ func MessageLinksManualGroupKey(update *ext.Update) string {
 // 获取链接中的文件并回复等待消息
 func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Update) (replied *types.Message, files []tfile.TGFileMessage, editReplied EditMessageFunc, err error) {
 	logger := log.FromContext(ctx)
-	msgLinks := re.TgMessageLinkRegexp.FindAllString(tgutil.ExtractMessageEntityUrlsText(update.EffectiveMessage.Message), -1)
+	msgLinks := re.ExtractTgMessageLinks(tgutil.ExtractMessageEntityUrlsText(update.EffectiveMessage.Message))
 	if len(msgLinks) == 0 {
 		logger.Warn("no matched message links but called handleMessageLink")
 		return nil, nil, nil, dispatcher.EndGroups
