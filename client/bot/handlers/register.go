@@ -28,6 +28,7 @@ var CommandHandlers = []DescCommandHandler{
 	{"dir", i18nk.BotMsgCmdDir, handleDirCmd},
 	{"rule", i18nk.BotMsgCmdRule, handleRuleCmd},
 	{"save", i18nk.BotMsgCmdSave, handleSilentMode(handleSaveCmd, handleSilentSaveReplied)},
+	{"merge", i18nk.BotMsgCmdMerge, handleMergeCmd},
 	{"dl", i18nk.BotMsgCmdDl, handleDlCmd},
 	{"aria2dl", i18nk.BotMsgCmdAria2dl, handleAria2DlCmd},
 	{"ytdlp", i18nk.BotMsgCmdYtdlp, handleYtdlpCmd},

@@ -23,6 +23,7 @@ const (
 	BotMsgCmdHelp                                         Key = "bot.msg.cmd.help"
 	BotMsgCmdImport                                       Key = "bot.msg.cmd.import"
 	BotMsgCmdLswatch                                      Key = "bot.msg.cmd.lswatch"
+	BotMsgCmdMerge                                        Key = "bot.msg.cmd.merge"
 	BotMsgCmdParser                                       Key = "bot.msg.cmd.parser"
 	BotMsgCmdRule                                         Key = "bot.msg.cmd.rule"
 	BotMsgCmdSave                                         Key = "bot.msg.cmd.save"

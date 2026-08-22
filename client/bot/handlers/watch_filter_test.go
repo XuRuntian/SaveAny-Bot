@@ -187,7 +187,8 @@ func TestWatchMediaGroupHandlerSeparatesGroupKeys(t *testing.T) {
 	}
 	key := watchMediaGroupKey{chatID: 1, userID: 2, senderID: 3, groupID: 4}
 	otherSender := watchMediaGroupKey{chatID: 1, userID: 2, senderID: 9, groupID: 4}
-	results := make(chan []tfile.TGFileMessage, 2)
+	otherWatch := watchMediaGroupKey{chatID: 1, userID: 2, watchID: 7, senderID: 3, groupID: 4}
+	results := make(chan []tfile.TGFileMessage, 3)
 
 	handler.addFile(key, fakeWatchFile("a.jpg", 1), time.Millisecond, 0, func(files []tfile.TGFileMessage) {
 		results <- files
@@ -198,9 +199,12 @@ func TestWatchMediaGroupHandlerSeparatesGroupKeys(t *testing.T) {
 	handler.addFile(otherSender, fakeWatchFile("c.jpg", 3), time.Millisecond, 0, func(files []tfile.TGFileMessage) {
 		results <- files
 	})
+	handler.addFile(otherWatch, fakeWatchFile("d.jpg", 4), time.Millisecond, 0, func(files []tfile.TGFileMessage) {
+		results <- files
+	})
 
 	gotSizes := map[int]int{}
-	for range 2 {
+	for range 3 {
 		select {
 		case files := <-results:
 			gotSizes[len(files)]++
@@ -208,8 +212,8 @@ func TestWatchMediaGroupHandlerSeparatesGroupKeys(t *testing.T) {
 			t.Fatal("timed out waiting for media group callbacks")
 		}
 	}
-	if gotSizes[2] != 1 || gotSizes[1] != 1 {
-		t.Fatalf("callback batch sizes = %v, want one 2-file batch and one 1-file batch", gotSizes)
+	if gotSizes[2] != 1 || gotSizes[1] != 2 {
+		t.Fatalf("callback batch sizes = %v, want one 2-file batch and two 1-file batches", gotSizes)
 	}
 }
 

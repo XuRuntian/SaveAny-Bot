@@ -77,7 +77,13 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
 	}
-	watching, err := user.WatchingChat(ctx, chatID)
+	options, err := parseWatchOptions(ctx, args[2:])
+	if err != nil {
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
+		return dispatcher.EndGroups
+	}
+	watchChat := watchChatFromOptions(user.ID, chatID, options)
+	watching, err := user.WatchingChatConfig(ctx, chatID, watchChat)
 	if err != nil {
 		logger.Errorf("Failed to check if user is watching chat %d: %s", chatID, err)
 		return dispatcher.EndGroups
@@ -86,25 +92,24 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoAlreadyWatchingChat)), nil)
 		return dispatcher.EndGroups
 	}
-	options, err := parseWatchOptions(ctx, args[2:])
-	if err != nil {
-		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
-		return dispatcher.EndGroups
-	}
-	if err := user.WatchChat(ctx, database.WatchChat{
-		UserID:             user.ID,
-		ChatID:             chatID,
-		Filter:             options.filter,
-		GroupMode:          options.groupMode,
-		GroupWindowSeconds: options.groupWindowSeconds,
-		GroupMax:           options.groupMax,
-	}); err != nil {
+	if err := user.WatchChat(ctx, watchChat); err != nil {
 		logger.Errorf("Failed to watch chat %d: %s", chatID, err)
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorWatchChatFailed, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
 	}
 	ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoWatchChatStarted, map[string]any{"Chat": chatArg})), nil)
 	return dispatcher.EndGroups
+}
+
+func watchChatFromOptions(userID uint, chatID int64, options watchOptions) database.WatchChat {
+	return database.WatchChat{
+		UserID:             userID,
+		ChatID:             chatID,
+		Filter:             options.filter,
+		GroupMode:          options.groupMode,
+		GroupWindowSeconds: options.groupWindowSeconds,
+		GroupMax:           options.groupMax,
+	}
 }
 
 func parseWatchOptions(ctx *ext.Context, args []string) (watchOptions, error) {
@@ -289,9 +294,20 @@ func handleUnwatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
 	}
-	if err := user.UnwatchChat(ctx, chatID); err != nil {
-		logger.Errorf("Failed to unwatch chat %d: %s", chatID, err)
-		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorUnwatchChatFailed, map[string]any{"Error": err.Error()})), nil)
+	var unwatchErr error
+	if len(args) > 2 {
+		options, err := parseWatchOptions(ctx, args[2:])
+		if err != nil {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
+			return dispatcher.EndGroups
+		}
+		unwatchErr = user.UnwatchChatConfig(ctx, chatID, watchChatFromOptions(user.ID, chatID, options))
+	} else {
+		unwatchErr = user.UnwatchChat(ctx, chatID)
+	}
+	if unwatchErr != nil {
+		logger.Errorf("Failed to unwatch chat %d: %s", chatID, unwatchErr)
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorUnwatchChatFailed, map[string]any{"Error": unwatchErr.Error()})), nil)
 		return dispatcher.EndGroups
 	}
 	ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoWatchChatStopped, map[string]any{"Chat": chatArg})), nil)
@@ -301,6 +317,7 @@ func handleUnwatchCmd(ctx *ext.Context, update *ext.Update) error {
 type watchMediaGroupKey struct {
 	chatID   int64
 	userID   uint
+	watchID  uint
 	senderID int64
 	groupID  int64
 	soft     bool
@@ -499,6 +516,7 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 				key := watchMediaGroupKey{
 					chatID:   event.ChatID,
 					userID:   user.ID,
+					watchID:  chat.ID,
 					senderID: senderID,
 					groupID:  groupID,
 				}
@@ -511,6 +529,7 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 				key := watchMediaGroupKey{
 					chatID:   event.ChatID,
 					userID:   user.ID,
+					watchID:  chat.ID,
 					senderID: senderID,
 					soft:     true,
 				}

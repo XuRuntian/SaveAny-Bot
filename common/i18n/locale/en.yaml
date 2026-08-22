@@ -29,6 +29,7 @@ bot:
       /silent - Toggle silent mode
       /storage - Set default storage
       /save [custom filename] - Save file
+      /merge <message_link1> <message_link2> ... - Merge message links into album saves
       /import <storage_name> <dir_path> [channel_id] [filter] - Import files from storage to Telegram
       /dir - Manage storage directories
       /rule - Manage rules
@@ -50,6 +51,7 @@ bot:
       dir: "Manage storage directories"
       rule: "Manage auto-save rules"
       save: "Save files"
+      merge: "Merge message links into albums"
       dl: "Download files from given links"
       aria2dl: "Download files using Aria2"
       ytdlp: "Download video/audio using yt-dlp"

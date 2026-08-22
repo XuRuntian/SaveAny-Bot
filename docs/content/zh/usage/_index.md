@@ -12,5 +12,5 @@ weight: 10
 要使用 Bot 的转存 Telegram 文件功能, 需要向 Bot 发送或转发以下类型的消息.
 
 1. 文件或媒体消息, 如图片, 视频, 文档等
-2. Telegram 消息链接, 例如: `https://t.me/acherkrau/1097`. **即使频道禁止了转发和保存, Bot 依然可以下载其文件.** 同一条消息中发送多条 Telegram 消息链接时, 可以加一行 `group:merge`, Bot 会尽量将解析出的图片/视频按输入顺序合并为相册批量保存.
+2. Telegram 消息链接, 例如: `https://t.me/acherkrau/1097`. **即使频道禁止了转发和保存, Bot 依然可以下载其文件.** 同一条消息中发送多条 Telegram 消息链接时, 可以加一行 `group:merge` 或使用 `/merge`, Bot 会尽量将解析出的图片/视频按输入顺序合并为相册批量保存.
 3. Telegra.ph 的文章链接, Bot 将下载其中的所有图片

@@ -6,12 +6,22 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/dirutil"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/msgelem"
+	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/re"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/shortcut"
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/pkg/tcbdata"
 	"github.com/krau/SaveAny-Bot/storage"
 )
+
+func handleMergeCmd(ctx *ext.Context, update *ext.Update) error {
+	if len(re.ExtractTgMessageLinks(tgutil.ExtractMessageEntityUrlsText(update.EffectiveMessage.Message))) == 0 {
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgSaveHelpText)), nil)
+		return dispatcher.EndGroups
+	}
+	return handleSilentMode(handleMessageLink, handleSilentSaveLink)(ctx, update)
+}
 
 func handleMessageLink(ctx *ext.Context, update *ext.Update) error {
 	replied, files, editReplied, err := shortcut.GetFilesFromUpdateLinkMessageWithReplyEdit(ctx, update)

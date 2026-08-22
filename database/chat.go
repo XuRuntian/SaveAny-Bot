@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/gotd/td/constant"
+	"gorm.io/gorm"
 )
 
 func (user *User) WatchChat(ctx context.Context, chat WatchChat) error {
@@ -16,17 +17,39 @@ func (user *User) WatchChat(ctx context.Context, chat WatchChat) error {
 }
 
 func (user *User) UnwatchChat(ctx context.Context, chatID int64) error {
-	var watchChat WatchChat
-	err := db.WithContext(ctx).Where("chat_id IN ? AND user_id = ?", watchChatIDCandidates(chatID), user.ID).First(&watchChat).Error
-	if err != nil {
-		return err
+	result := db.WithContext(ctx).Unscoped().Where("chat_id IN ? AND user_id = ?", watchChatIDCandidates(chatID), user.ID).Delete(&WatchChat{})
+	if result.Error != nil {
+		return result.Error
 	}
-	return db.WithContext(ctx).Unscoped().Delete(&watchChat).Error
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (user *User) UnwatchChatConfig(ctx context.Context, chatID int64, watch WatchChat) error {
+	result := watchChatConfigQuery(db.WithContext(ctx).Unscoped(), user.ID, chatID, watch).Delete(&WatchChat{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (user *User) WatchingChat(ctx context.Context, chatID int64) (bool, error) {
 	var count int64
 	err := db.WithContext(ctx).Model(&WatchChat{}).Where("chat_id IN ? AND user_id = ?", watchChatIDCandidates(chatID), user.ID).Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (user *User) WatchingChatConfig(ctx context.Context, chatID int64, watch WatchChat) (bool, error) {
+	var count int64
+	err := watchChatConfigQuery(db.WithContext(ctx).Model(&WatchChat{}), user.ID, chatID, watch).Count(&count).Error
 	if err != nil {
 		return false, err
 	}
@@ -40,6 +63,18 @@ func GetWatchChatsByChatID(ctx context.Context, chatID int64) ([]*WatchChat, err
 		return nil, err
 	}
 	return watchChats, nil
+}
+
+func watchChatConfigQuery(tx *gorm.DB, userID uint, chatID int64, watch WatchChat) *gorm.DB {
+	return tx.Where(
+		"chat_id IN ? AND user_id = ? AND filter = ? AND group_mode = ? AND group_window_seconds = ? AND group_max = ?",
+		watchChatIDCandidates(chatID),
+		userID,
+		watch.Filter,
+		watch.GroupMode,
+		watch.GroupWindowSeconds,
+		watch.GroupMax,
+	)
 }
 
 func watchChatIDCandidates(chatID int64) []int64 {
