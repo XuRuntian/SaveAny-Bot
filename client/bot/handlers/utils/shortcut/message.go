@@ -70,6 +70,20 @@ const (
 	mergeMessageLinksCommand = "/merge"
 )
 
+type linkedMessageKey struct {
+	chatID    int64
+	messageID int
+}
+
+func markLinkedMessageSeen(seen map[linkedMessageKey]struct{}, chatID int64, messageID int) bool {
+	key := linkedMessageKey{chatID: chatID, messageID: messageID}
+	if _, ok := seen[key]; ok {
+		return false
+	}
+	seen[key] = struct{}{}
+	return true
+}
+
 func MergeMessageLinksRequested(update *ext.Update) bool {
 	if update == nil || update.EffectiveMessage == nil || update.EffectiveMessage.Message == nil {
 		return false
@@ -125,9 +139,14 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 		return nil, nil, nil, dispatcher.EndGroups
 	}
 	files = make([]tfile.TGFileMessage, 0, len(msgLinks))
-	addFile := func(client downloader.Client, msg *tg.Message) {
+	seenMessages := make(map[linkedMessageKey]struct{})
+	addFile := func(chatID int64, client downloader.Client, msg *tg.Message) {
 		if msg == nil || msg.Media == nil {
 			logger.Warn("message has no media, skipping")
+			return
+		}
+		if !markLinkedMessageSeen(seenMessages, chatID, msg.GetID()) {
+			logger.Debug("Skipping duplicate linked message", "chat_id", chatID, "message_id", msg.GetID())
 			return
 		}
 		media, ok := msg.GetMedia()
@@ -184,11 +203,11 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 				logger.Errorf("failed to get grouped messages: %s", err)
 			} else {
 				for _, gmsg := range gmsgs {
-					addFile(tctx.Raw, gmsg)
+					addFile(chatId, tctx.Raw, gmsg)
 				}
 			}
 		} else {
-			addFile(tctx.Raw, msg)
+			addFile(chatId, tctx.Raw, msg)
 		}
 	}
 	if len(files) == 0 {

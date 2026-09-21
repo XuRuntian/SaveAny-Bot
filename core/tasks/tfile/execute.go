@@ -62,7 +62,9 @@ func (t *Task) Execute(ctx context.Context) error {
 		return fmt.Errorf("failed to get file stat: %w", err)
 	}
 	vctx := context.WithValue(ctx, ctxkey.ContentLength, fileStat.Size())
-	if caption, ok := sourceCaption(t.File); ok {
+	if caption, ok := storagetypes.SourceCaptionFromContext(ctx); ok {
+		vctx = storagetypes.WithSourceCaption(vctx, caption)
+	} else if caption, ok := sourceCaption(t.File); ok {
 		vctx = storagetypes.WithSourceCaption(vctx, caption)
 	}
 	err = retry.Retry(func() error {

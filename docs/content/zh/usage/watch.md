@@ -5,6 +5,11 @@ weight: 4
 
 # 监听聊天
 
+使用 `/watch https://t.me/c/123456789/520482` 自动读取消息发送者 ID,
+监听该人在来源聊天中的新媒体, 无需用户名. 显式过滤器覆盖自动发送者过滤.
+消息不可访问或没有真实用户 ID 时会报错. 用相同参数的 `/unwatch` 取消.
+自动转存到 Telegram 时追加 `#userid_数字ID`; 匿名和频道身份不添加用户标签.
+
 {{< hint warning >}}
 该功能需开启 UserBot 集成.
 {{< /hint >}}
@@ -18,13 +23,13 @@ weight: 4
 监听聊天:
 
 ```
-/watch <chat_id/username> [filter] [group:soft] [window:8s] [max:10]
+/watch <chat_id/username/message_link> [filter] [group:soft] [window:8s] [max:10]
 ```
 
 取消监听:
 
 ```
-/unwatch <chat_id/username>
+/unwatch <chat_id/username/message_link> [filter] [group:soft] [window:8s] [max:10]
 ```
 
 过滤器类型:

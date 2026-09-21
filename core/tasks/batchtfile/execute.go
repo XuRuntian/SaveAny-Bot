@@ -39,8 +39,9 @@ func (t *Task) Execute(ctx context.Context) error {
 		t.Progress.OnStart(ctx, t)
 	}
 	groups := t.executionGroups()
-	var err error
+	var taskErr error
 	for i := 0; i < len(groups); {
+		var err error
 		if groups[i].usesBatchSaver() {
 			err = t.processBatch(ctx, groups[i])
 			i++
@@ -58,12 +59,14 @@ func (t *Task) Execute(ctx context.Context) error {
 		}
 		if err != nil {
 			if !t.IgnoreErrors || errors.Is(err, context.Canceled) {
+				taskErr = err
 				break
 			}
-			logger.Warnf("Group processing failed (ignored): %v", err)
-			err = nil
+			logger.Warnf("Group processing failed; continuing with remaining groups: %v", err)
+			taskErr = errors.Join(taskErr, err)
 		}
 	}
+	err := taskErr
 	if err != nil {
 		logger.Errorf("Error during batch file processing: %v", err)
 	} else {
@@ -206,6 +209,12 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 			t.markItemFailed(elem.ID, FailureStageCache, err)
 			return fmt.Errorf("failed to get cache file stat: %w", err)
 		}
+		if stat.Size() == 0 {
+			file.Close()
+			err := fmt.Errorf("cache file for %q is empty", elem.Path)
+			t.markItemFailed(elem.ID, FailureStageCache, err)
+			return err
+		}
 		openFiles = append(openFiles, file)
 		items = append(items, storagetypes.BatchItem{
 			Reader:          file,
@@ -224,20 +233,26 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 
 func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, items []storagetypes.BatchItem) error {
 	t.startUpload(ctx)
+	var saveErr error
 	if progressSaver, ok := successElems[0].Storage.(storage.StorageBatchProgressSaver); ok {
-		err := progressSaver.SaveBatchWithProgress(ctx, items, func(index int, uploaded, total int64) {
+		saveErr = progressSaver.SaveBatchWithProgress(ctx, items, func(index int, uploaded, total int64) {
 			if index < 0 || index >= len(successElems) {
 				return
 			}
 			t.uploadCallback(ctx, successElems[index].ID)(uploaded, total)
 		})
-		if err != nil {
-			for _, elem := range successElems {
-				t.markItemFailed(elem.ID, FailureStageBatchUpload, err)
-			}
-			t.notifyStateChange(ctx)
-			return fmt.Errorf("failed to save batch: %w", err)
+	} else {
+		for i := range items {
+			items[i].Reader = ioutil.NewProgressReader(
+				items[i].Reader,
+				items[i].Size,
+				t.uploadCallback(ctx, successElems[i].ID),
+			)
 		}
+		saveErr = successElems[0].Storage.(storage.StorageBatchSaver).SaveBatch(ctx, items)
+	}
+
+	if saveErr == nil {
 		for index, elem := range successElems {
 			t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
 			t.markItemCompleted(elem.ID)
@@ -245,25 +260,40 @@ func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, 
 		t.notifyStateChange(ctx)
 		return nil
 	}
-	for i := range items {
-		items[i].Reader = ioutil.NewProgressReader(
-			items[i].Reader,
-			items[i].Size,
-			t.uploadCallback(ctx, successElems[i].ID),
-		)
+
+	var partial *storagetypes.BatchSaveError
+	if errors.As(saveErr, &partial) && len(partial.Failures) > 0 {
+		failures := make(map[int]storagetypes.BatchSaveFailure, len(partial.Failures))
+		for _, failure := range partial.Failures {
+			if failure.Index < 0 || failure.Index >= len(successElems) {
+				return fmt.Errorf("batch storage returned invalid failed item index %d: %w", failure.Index, saveErr)
+			}
+			failures[failure.Index] = failure
+		}
+		for index, elem := range successElems {
+			if failure, failed := failures[index]; failed {
+				failureErr := failure.Err
+				if failureErr == nil {
+					failureErr = saveErr
+				}
+				t.markItemFailed(elem.ID, FailureStageUpload, failureErr)
+				continue
+			}
+			t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
+			t.markItemCompleted(elem.ID)
+		}
+		log.FromContext(ctx).Warnf("Batch completed with %d skipped item(s): %v", len(failures), saveErr)
+		t.notifyStateChange(ctx)
+		return nil
 	}
-	if err := successElems[0].Storage.(storage.StorageBatchSaver).SaveBatch(ctx, items); err != nil {
+
+	if saveErr != nil {
 		for _, elem := range successElems {
-			t.markItemFailed(elem.ID, FailureStageBatchUpload, err)
+			t.markItemFailed(elem.ID, FailureStageBatchUpload, saveErr)
 		}
 		t.notifyStateChange(ctx)
-		return fmt.Errorf("failed to save batch: %w", err)
+		return fmt.Errorf("failed to save batch: %w", saveErr)
 	}
-	for index, elem := range successElems {
-		t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
-		t.markItemCompleted(elem.ID)
-	}
-	t.notifyStateChange(ctx)
 	return nil
 }
 

@@ -2,9 +2,13 @@ package telegram
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"testing"
 
+	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 )
 
@@ -56,9 +60,9 @@ func TestPlanMediaGroups(t *testing.T) {
 			wantSizes: []int{1, 1, 1},
 		},
 		{
-			name:      "maximum album size",
+			name:      "reliable album size",
 			items:     repeatedAlbumItems(11),
-			wantSizes: []int{10, 1},
+			wantSizes: []int{5, 5, 1},
 		},
 	}
 
@@ -74,6 +78,69 @@ func TestPlanMediaGroups(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAlbumRecoverySplit(t *testing.T) {
+	tests := []struct {
+		count  int
+		wantAt int
+		wantOK bool
+	}{
+		{count: 1},
+		{count: 2, wantAt: 1, wantOK: true},
+		{count: 3, wantAt: 1, wantOK: true},
+		{count: 4, wantAt: 2, wantOK: true},
+		{count: 5, wantAt: 2, wantOK: true},
+	}
+	for _, tt := range tests {
+		at, ok := albumRecoverySplit(tt.count)
+		if at != tt.wantAt || ok != tt.wantOK {
+			t.Errorf("albumRecoverySplit(%d) = (%d, %t), want (%d, %t)", tt.count, at, ok, tt.wantAt, tt.wantOK)
+		}
+	}
+}
+
+func TestIsRecoverableAlbumMediaError(t *testing.T) {
+	for _, message := range []string{
+		tg.ErrMediaEmpty,
+		tg.ErrMediaFileInvalid,
+		tg.ErrMediaGroupedInvalid,
+		tg.ErrMediaInvalid,
+		tg.ErrMediaTypeInvalid,
+	} {
+		err := fmt.Errorf("send album: %w", tgerr.New(400, message))
+		if !isRecoverableAlbumMediaError(err) {
+			t.Errorf("error %q was not recoverable", message)
+		}
+	}
+	if isRecoverableAlbumMediaError(tgerr.New(500, "INTERNAL")) {
+		t.Fatal("transient server error was treated as invalid media")
+	}
+}
+
+func TestIsSkippableBatchItemError(t *testing.T) {
+	for _, message := range []string{
+		tg.ErrMediaEmpty,
+		tg.ErrDocumentInvalid,
+		tg.ErrFileContentTypeInvalid,
+		tg.ErrFileEmtpy,
+		tg.ErrPhotoInvalid,
+		tg.ErrPhotoInvalidDimensions,
+		tg.ErrVideoFileInvalid,
+	} {
+		if !isSkippableBatchItemError(tgerr.New(400, message)) {
+			t.Errorf("error %q was not skippable", message)
+		}
+	}
+	for _, err := range []error{
+		context.Canceled,
+		tgerr.New(500, "INTERNAL"),
+		tgerr.New(400, "CHAT_WRITE_FORBIDDEN"),
+	} {
+		if isSkippableBatchItemError(err) {
+			t.Errorf("non-media error %q was treated as skippable", err)
+		}
 	}
 }
 
@@ -95,6 +162,63 @@ func TestMediaCaption(t *testing.T) {
 				t.Fatalf("got %d caption options, want %d", got, tt.wantLen)
 			}
 		})
+	}
+}
+
+func TestUploadedMessageMediaToInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		media tg.MessageMediaClass
+		check func(t *testing.T, input tg.InputMediaClass)
+	}{
+		{
+			name: "photo",
+			media: &tg.MessageMediaPhoto{
+				Photo:      &tg.Photo{ID: 11, AccessHash: 12, FileReference: []byte{13}},
+				TTLSeconds: 14,
+			},
+			check: func(t *testing.T, input tg.InputMediaClass) {
+				photo, ok := input.(*tg.InputMediaPhoto)
+				if !ok {
+					t.Fatalf("unexpected photo input: %#v", input)
+				}
+				photoID, ok := photo.ID.(*tg.InputPhoto)
+				if !ok || photoID.ID != 11 || photo.TTLSeconds != 14 {
+					t.Fatalf("unexpected photo input: %#v", input)
+				}
+			},
+		},
+		{
+			name: "document",
+			media: &tg.MessageMediaDocument{
+				Document:   &tg.Document{ID: 21, AccessHash: 22, FileReference: []byte{23}},
+				TTLSeconds: 24,
+			},
+			check: func(t *testing.T, input tg.InputMediaClass) {
+				document, ok := input.(*tg.InputMediaDocument)
+				if !ok {
+					t.Fatalf("unexpected document input: %#v", input)
+				}
+				documentID, ok := document.ID.(*tg.InputDocument)
+				if !ok || documentID.ID != 21 || document.TTLSeconds != 24 {
+					t.Fatalf("unexpected document input: %#v", input)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, err := uploadedMessageMediaToInput(tt.media)
+			if err != nil {
+				t.Fatalf("uploadedMessageMediaToInput() failed: %v", err)
+			}
+			tt.check(t, input)
+		})
+	}
+
+	if _, err := uploadedMessageMediaToInput(&tg.MessageMediaEmpty{}); err == nil {
+		t.Fatal("empty media was accepted")
 	}
 }
 

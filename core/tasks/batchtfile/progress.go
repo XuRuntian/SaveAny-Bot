@@ -201,6 +201,7 @@ func buildBatchDoneMarkup(info TaskInfo, skipped []string, err error) string {
 			return localizedProgressMarkup(i18nk.BotMsgProgressBatchDoneWithSkipped, map[string]any{
 				"Success": completed,
 				"Skipped": totalSkipped,
+				"Names":   skippedItemSummary(items, skipped),
 				"Size":    dlutil.FormatSize(totalSize),
 			})
 		}
@@ -254,6 +255,20 @@ func buildBatchDoneMarkup(info TaskInfo, skipped []string, err error) string {
 		"Failed":     failed,
 		"Incomplete": incomplete,
 	})
+}
+
+func skippedItemSummary(items []TaskItemProgress, skipped []string) string {
+	names := append([]string(nil), skipped...)
+	for _, item := range items {
+		if item.Phase == ItemPhaseFailed {
+			names = append(names, item.Name)
+		}
+	}
+	const visible = 5
+	if len(names) <= visible {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s (+%d)", strings.Join(names[:visible], ", "), len(names)-visible)
 }
 
 func buildBatchDoneMessage(info TaskInfo, skipped []string, err error) renderedBatchMessage {

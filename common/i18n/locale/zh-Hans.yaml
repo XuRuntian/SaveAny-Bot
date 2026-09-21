@@ -85,10 +85,10 @@ bot:
       使用 /watch 命令监听一个聊天的消息, 并自动保存到默认存储中, 遵从存储规则.
 
       命令语法:
-      /watch <chat_id> [filter] [group:soft] [window:8s] [max:10]
+      /watch <chat_id/用户名/消息链接> [filter] [group:soft] [window:8s] [max:10]
 
       参数:
-      - <chat_id>: 聊天的 ID 或用户名
+      - <chat_id/用户名/消息链接>: 消息链接自动监听该消息发送者在来源聊天中的新媒体; 显式 filter 覆盖此自动过滤
       - [filter]: 可选, 格式为 过滤器类型:表达式 , 所有支持类型的过滤器请查看文档
       - group:soft: 可选, 将同一发送者连续发送的散图/视频按时间窗口合并
       - window:8s: 可选, 软分组等待窗口, 默认 8s
@@ -98,6 +98,7 @@ bot:
       /watch -1002229835658 msgre:.*plana.*
       /watch -1002229835658 from:@Luscious_Yana,@another_user
       /watch -1002229835658 from:@Luscious_Yana group:soft window:8s max:10
+      /watch https://t.me/c/2229835658/12345
 
       这将监听 ID 为 -1002229835658 的聊天, 并转存所有包含 "plana" 或来自指定用户的媒体消息
       原始媒体组会作为批量任务保存; 开启 group:soft 后, 散图/视频也会按同一发送者和时间窗口合并; 使用 Telegram 存储时会尽量保留为相册消息
@@ -375,7 +376,7 @@ bot:
       batch_summary_failed: "❌ 失败：<code>{{.Count}}</code>"
       batch_summary_skipped: "⏭️ 已跳过：<code>{{.Count}}</code>"
       batch_done: "<b>✅ 处理完成</b>\n\n文件数: <code>{{.Count}}</code>\n总大小: <code>{{.Size}}</code>"
-      batch_done_with_skipped: "<b>⚠️ 处理完成</b>\n\n成功: <code>{{.Success}}</code>\n已跳过: <code>{{.Skipped}}</code>\n总大小: <code>{{.Size}}</code>"
+      batch_done_with_skipped: "<b>⚠️ 处理完成</b>\n\n成功: <code>{{.Success}}</code>\n已跳过: <code>{{.Skipped}}</code>\n跳过文件: <code>{{.Names}}</code>\n总大小: <code>{{.Size}}</code>"
       batch_canceled: "<b>🚫 任务已取消</b>\n\n文件数: <code>{{.Total}}</code>\n已完成: <code>{{.Completed}}</code>\n未完成: <code>{{.Incomplete}}</code>\n已跳过: <code>{{.Skipped}}</code>"
       batch_failed_item: "<b>❌ 处理失败</b>\n\n失败文件: <code>{{.Index}}. {{.Name}}</code>\n失败阶段: <code>{{.Stage}}</code>\n失败进度: <code>{{.Progress}}</code>\n失败前速度: <code>{{.Speed}}</code>\n原因: <code>{{.Reason}}</code>\n\n✅ 已完成: <code>{{.Completed}}</code>\n❌ 失败: <code>{{.Failed}}</code>\n⏹️ 未完成: <code>{{.Incomplete}}</code>"
       batch_failed_group: "<b>❌ 批量上传失败</b>\n\n受影响文件: <code>{{.Affected}} 个</code>\n原因: <code>{{.Reason}}</code>\n\n✅ 已完成: <code>{{.Completed}}</code>\n❌ 批次失败: <code>{{.Failed}}</code>\n⏹️ 未完成: <code>{{.Incomplete}}</code>"

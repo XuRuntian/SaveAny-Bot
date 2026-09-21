@@ -5,6 +5,12 @@ weight: 4
 
 # Watch Chats
 
+Use `/watch https://t.me/c/123456789/520482` to watch that message's sender
+in the source chat without a username. Explicit filters override the inferred sender.
+Inaccessible messages or missing user IDs return an error. Use the same arguments
+with `/unwatch` to remove the watch. Automatic Telegram saves append
+`#userid_<ID>`; anonymous and channel identities do not receive a user tag.
+
 {{< hint warning >}}
 This feature requires enabling UserBot integration.
 {{< /hint >}}
@@ -18,13 +24,13 @@ Loose photos/videos from the same sender are not grouped by default. Enable soft
 Watch a chat:
 
 ```
-/watch <chat_id/username> [filter] [group:soft] [window:8s] [max:10]
+/watch <chat_id/username/message_link> [filter] [group:soft] [window:8s] [max:10]
 ```
 
 Stop watching:
 
 ```
-/unwatch <chat_id/username>
+/unwatch <chat_id/username/message_link> [filter] [group:soft] [window:8s] [max:10]
 ```
 
 Filter types:

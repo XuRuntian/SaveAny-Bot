@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,100 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 )
+
+func TestParseWatchTargetMessageLink(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  string
+		want    int64
+		wantErr bool
+	}{
+		{name: "private link", target: "https://t.me/c/3998388371/2", want: 3998388371},
+		{name: "link without scheme", target: "t.me/c/3998388371/2", want: 3998388371},
+		{name: "numeric chat", target: "-1003998388371", want: -1003998388371},
+		{name: "reject non Telegram URL", target: "https://example.com/c/3998388371/2", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseWatchTarget(nil, tt.target)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseWatchTarget() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseWatchTarget() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWatchCaptionWithSenderID(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *tg.Message
+		want string
+		ok   bool
+	}{
+		{
+			name: "append tag to caption",
+			msg:  watchTestMessage("caption", &tg.PeerUser{UserID: 123456789}),
+			want: "caption\n#userid_123456789",
+			ok:   true,
+		},
+		{
+			name: "tag is caption when source is empty",
+			msg:  watchTestMessage("", &tg.PeerUser{UserID: 123456789}),
+			want: "#userid_123456789",
+			ok:   true,
+		},
+		{
+			name: "existing tag is not duplicated",
+			msg:  watchTestMessage("caption\n#userid_123456789", &tg.PeerUser{UserID: 123456789}),
+			want: "caption\n#userid_123456789",
+			ok:   true,
+		},
+		{
+			name: "channel identity is not tagged as user",
+			msg:  watchTestMessage("caption", &tg.PeerChannel{ChannelID: 123}),
+		},
+		{name: "missing sender", msg: &tg.Message{Message: "caption"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := watchCaptionWithSenderID(tt.msg)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("watchCaptionWithSenderID() = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestWatchCaptionWithSenderIDFitsTelegramLimit(t *testing.T) {
+	msg := watchTestMessage(strings.Repeat("文", 1024), &tg.PeerUser{UserID: 123456789})
+	got, ok := watchCaptionWithSenderID(msg)
+	if !ok {
+		t.Fatal("expected sender tag")
+	}
+	if units := utf16Length(got); units > 1024 {
+		t.Fatalf("caption uses %d UTF-16 units, want at most 1024", units)
+	}
+	if !strings.HasSuffix(got, "\n#userid_123456789") {
+		t.Fatalf("caption does not preserve sender tag: %q", got)
+	}
+}
+
+func watchTestMessage(caption string, peer tg.PeerClass) *tg.Message {
+	msg := &tg.Message{Message: caption}
+	msg.SetFromID(peer)
+	return msg
+}
 
 func TestWatchFilterMatches(t *testing.T) {
 	tests := []struct {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"sort"
@@ -10,10 +11,12 @@ import (
 	"sync"
 	"text/template"
 	"time"
+	"unicode/utf16"
 
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
+	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/ruleutil"
 	userclient "github.com/krau/SaveAny-Bot/client/user"
@@ -26,6 +29,7 @@ import (
 	coretfile "github.com/krau/SaveAny-Bot/core/tasks/tfile"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/fnamest"
+	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/SaveAny-Bot/storage"
 	"github.com/rs/xid"
@@ -72,12 +76,15 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		return dispatcher.EndGroups
 	}
 	chatArg := args[1]
-	chatID, err := tgutil.ParseChatID(ctx, chatArg)
+	chatID, err := parseWatchTarget(watchResolveContext(ctx), chatArg)
 	if err != nil {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
 	}
 	options, err := parseWatchOptions(ctx, args[2:])
+	if err == nil {
+		err = resolveWatchMessageSender(watchResolveContext(ctx), chatArg, &options)
+	}
 	if err != nil {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
@@ -110,6 +117,64 @@ func watchChatFromOptions(userID uint, chatID int64, options watchOptions) datab
 		GroupWindowSeconds: options.groupWindowSeconds,
 		GroupMax:           options.groupMax,
 	}
+}
+
+func watchResolveContext(ctx *ext.Context) *ext.Context {
+	if userCtx := userclient.GetCtx(); userCtx != nil {
+		return userCtx
+	}
+	return ctx
+}
+
+func parseWatchTarget(ctx *ext.Context, target string) (int64, error) {
+	if isWatchLink(target) {
+		if !strings.Contains(target, "://") {
+			target = "https://" + target
+		}
+		u, err := url.Parse(target)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || (u.Host != "t.me" && u.Host != "telegram.me") {
+			return 0, fmt.Errorf("invalid Telegram message link")
+		}
+		chatID, _, err := tgutil.ParseMessageLink(ctx, target)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse message link: %w", err)
+		}
+		return chatID, nil
+	}
+	return tgutil.ParseChatID(ctx, target)
+}
+
+func isWatchLink(target string) bool {
+	return strings.Contains(target, "://") || strings.HasPrefix(target, "t.me/") || strings.HasPrefix(target, "telegram.me/")
+}
+
+func resolveWatchMessageSender(ctx *ext.Context, target string, options *watchOptions) error {
+	if !isWatchLink(target) || options.filter != "" {
+		return nil
+	}
+	if !strings.Contains(target, "://") {
+		target = "https://" + target
+	}
+	chatID, msgID, err := tgutil.ParseMessageLink(ctx, target)
+	if err != nil {
+		return err
+	}
+	if ctx == nil {
+		return fmt.Errorf("UserBot is required")
+	}
+	msg, err := tgutil.GetMessageByID(ctx, chatID, msgID)
+	if err != nil {
+		return fmt.Errorf("get watch source message: %w", err)
+	}
+	if msg == nil {
+		return fmt.Errorf("source message unavailable")
+	}
+	senderID, ok := watchSenderID(msg)
+	if !ok {
+		return fmt.Errorf("source message does not expose a user ID")
+	}
+	options.filter = fmt.Sprintf("from:%d", senderID)
+	return nil
 }
 
 func parseWatchOptions(ctx *ext.Context, args []string) (watchOptions, error) {
@@ -201,10 +266,7 @@ func validateWatchGroupWindowSeconds(seconds int) (int, error) {
 }
 
 func resolveWatchFilterSenderIDs(ctx *ext.Context, idsOrUsernames string) ([]int64, error) {
-	resolveCtx := ctx
-	if userCtx := userclient.GetCtx(); userCtx != nil {
-		resolveCtx = userCtx
-	}
+	resolveCtx := watchResolveContext(ctx)
 
 	parts := strings.Split(idsOrUsernames, ",")
 	senderIDs := make([]int64, 0, len(parts))
@@ -289,14 +351,17 @@ func handleUnwatchCmd(ctx *ext.Context, update *ext.Update) error {
 		return dispatcher.EndGroups
 	}
 	chatArg := args[1]
-	chatID, err := tgutil.ParseChatID(ctx, chatArg)
+	chatID, err := parseWatchTarget(watchResolveContext(ctx), chatArg)
 	if err != nil {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
 	}
 	var unwatchErr error
-	if len(args) > 2 {
+	if len(args) > 2 || isWatchLink(chatArg) {
 		options, err := parseWatchOptions(ctx, args[2:])
+		if err == nil {
+			err = resolveWatchMessageSender(watchResolveContext(ctx), chatArg, &options)
+		}
 		if err != nil {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 			return dispatcher.EndGroups
@@ -559,6 +624,9 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent) {
 		startCreateTask:
 			storagePath := path.Join(dirPath, file.Name())
 			injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
+			if caption, ok := watchCaptionWithSenderID(file.Message()); ok {
+				injectCtx = storagetypes.WithSourceCaption(injectCtx, caption)
+			}
 			taskid := xid.New().String()
 			task, err := coretfile.NewTGFileTask(taskid, injectCtx, file, stor, storagePath, nil)
 			if err != nil {
@@ -666,10 +734,13 @@ func processWatchFileBatch(
 			logger.Errorf("create batch task element failed for watch media group: %s", err)
 			continue
 		}
+		if tagged, ok := watchCaptionWithSenderID(file.Message()); ok {
+			elem.SetSourceCaption(tagged)
+		}
 		if options.sourceGroupKey != "" {
-			caption := ""
-			if file.Message() != nil {
-				caption = file.Message().GetMessage()
+			caption := file.Message().GetMessage()
+			if tagged, ok := watchCaptionWithSenderID(file.Message()); ok {
+				caption = tagged
 			}
 			elem.SetSourceMetadata(options.sourceGroupKey, caption, true)
 		}
@@ -688,4 +759,57 @@ func processWatchFileBatch(
 		return
 	}
 	logger.Infof("Added watch media group task for user %d with %d files", user.ChatID, len(elems))
+}
+
+func watchCaptionWithSenderID(msg *tg.Message) (string, bool) {
+	senderID, ok := watchSenderID(msg)
+	if !ok {
+		return "", false
+	}
+	tag := fmt.Sprintf("#userid_%d", senderID)
+	caption := strings.TrimSpace(msg.GetMessage())
+	if caption == "" {
+		return tag, true
+	}
+	for _, line := range strings.Split(caption, "\n") {
+		if strings.TrimSpace(line) == tag {
+			return caption, true
+		}
+	}
+	suffix := "\n" + tag
+	return truncateUTF16(caption, 1024-utf16Length(suffix)) + suffix, true
+}
+
+func watchSenderID(msg *tg.Message) (int64, bool) {
+	if msg == nil {
+		return 0, false
+	}
+	fromID, ok := msg.GetFromID()
+	if !ok {
+		return 0, false
+	}
+	peer, ok := fromID.(*tg.PeerUser)
+	if !ok || peer.UserID <= 0 {
+		return 0, false
+	}
+	return peer.UserID, true
+}
+
+func utf16Length(value string) int {
+	return len(utf16.Encode([]rune(value)))
+}
+
+func truncateUTF16(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	var used int
+	for index, current := range value {
+		width := utf16.RuneLen(current)
+		if used+width > limit {
+			return value[:index]
+		}
+		used += width
+	}
+	return value
 }

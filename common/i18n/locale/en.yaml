@@ -84,10 +84,10 @@ bot:
       Use /watch to watch messages in a chat and automatically save them to the default storage, following storage rules.
 
       Syntax:
-      /watch <chat_id> [filter] [group:soft] [window:8s] [max:10]
+      /watch <chat_id/username/message_link> [filter] [group:soft] [window:8s] [max:10]
 
       Parameters:
-      - <chat_id>: Chat ID or username
+      - <chat_id/username/message_link>: A message link watches its sender in the source chat; explicit filters override the inferred sender
       - [filter]: Optional, format is filter_type:expression , see docs for all supported filters
       - group:soft: Optional, group loose photos/videos from the same sender within a time window
       - window:8s: Optional, soft grouping wait window, default 8s
@@ -97,6 +97,7 @@ bot:
       /watch -1002229835658 msgre:.*plana.*
       /watch -1002229835658 from:@Luscious_Yana,@another_user
       /watch -1002229835658 from:@Luscious_Yana group:soft window:8s max:10
+      /watch https://t.me/c/2229835658/12345
 
       This will watch chat with ID -1002229835658 and save media messages containing "plana" or sent by the specified users.
       Original media groups are saved as batch tasks; with group:soft enabled, loose photos/videos are grouped by sender and time window. Telegram storage will try to preserve them as album messages.
@@ -374,7 +375,7 @@ bot:
       batch_summary_failed: "❌ Failed: <code>{{.Count}}</code>"
       batch_summary_skipped: "⏭️ Skipped: <code>{{.Count}}</code>"
       batch_done: "<b>✅ Completed</b>\n\nFiles: <code>{{.Count}}</code>\nTotal size: <code>{{.Size}}</code>"
-      batch_done_with_skipped: "<b>⚠️ Completed</b>\n\nSucceeded: <code>{{.Success}}</code>\nSkipped: <code>{{.Skipped}}</code>\nTotal size: <code>{{.Size}}</code>"
+      batch_done_with_skipped: "<b>⚠️ Completed</b>\n\nSucceeded: <code>{{.Success}}</code>\nSkipped: <code>{{.Skipped}}</code>\nSkipped files: <code>{{.Names}}</code>\nTotal size: <code>{{.Size}}</code>"
       batch_canceled: "<b>🚫 Task canceled</b>\n\nFiles: <code>{{.Total}}</code>\nCompleted: <code>{{.Completed}}</code>\nIncomplete: <code>{{.Incomplete}}</code>\nSkipped: <code>{{.Skipped}}</code>"
       batch_failed_item: "<b>❌ Processing failed</b>\n\nFailed file: <code>{{.Index}}. {{.Name}}</code>\nStage: <code>{{.Stage}}</code>\nProgress: <code>{{.Progress}}</code>\nSpeed before failure: <code>{{.Speed}}</code>\nReason: <code>{{.Reason}}</code>\n\n✅ Completed: <code>{{.Completed}}</code>\n❌ Failed: <code>{{.Failed}}</code>\n⏹️ Incomplete: <code>{{.Incomplete}}</code>"
       batch_failed_group: "<b>❌ Batch upload failed</b>\n\nAffected files: <code>{{.Affected}}</code>\nReason: <code>{{.Reason}}</code>\n\n✅ Completed: <code>{{.Completed}}</code>\n❌ Batch failed: <code>{{.Failed}}</code>\n⏹️ Incomplete: <code>{{.Incomplete}}</code>"

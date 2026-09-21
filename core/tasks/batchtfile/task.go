@@ -110,6 +110,11 @@ func (e *TaskElement) SetSourceMetadata(groupKey, caption string, preserveCaptio
 	e.preserveCaption = preserveCaption
 }
 
+func (e *TaskElement) SetSourceCaption(caption string) {
+	e.sourceCaption = caption
+	e.preserveCaption = true
+}
+
 func sourceMetadata(file tfile.TGFile) (groupKey, caption string, preserveCaption bool) {
 	messageFile, ok := file.(tfile.TGFileMessage)
 	if !ok || messageFile.Message() == nil {

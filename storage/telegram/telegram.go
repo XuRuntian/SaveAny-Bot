@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,6 +38,10 @@ const (
 	DefaultSplitSize         = 4000 * 524288 // 4000 * 512 KB
 	MaxUploadFileSize        = 4000 * 524288 // 4000 * 512 KB
 	PremiumMaxUploadFileSize = 8000 * 524288 // 8000 * 512 KB
+
+	// Telegram accepts up to 10 items, but smaller groups reduce the time that
+	// uploaded media references must remain valid before the album is sent.
+	reliableAlbumItems = 5
 )
 
 type Telegram struct {
@@ -48,6 +53,7 @@ type preparedMedia struct {
 	peer     tg.InputPeerClass
 	uploader *uploader.Uploader
 	media    message.MultiMediaOption
+	caption  []message.StyledTextOption
 }
 
 type batchMediaItem struct {
@@ -184,7 +190,7 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 	if err := t.limiter.Wait(ctx); err != nil {
 		return fmt.Errorf("rate limit failed: %w", err)
 	}
-	prepared, err := t.prepareMedia(ctx, tctx, r, storagePath, size, nil, progress)
+	prepared, err := t.prepareMedia(ctx, tctx, r, storagePath, size, captionOverride, progress)
 	if err != nil {
 		return err
 	}
@@ -369,6 +375,7 @@ func (t *Telegram) prepareMedia(
 		peer:     peer,
 		uploader: upler,
 		media:    media,
+		caption:  caption,
 	}, nil
 }
 
@@ -406,10 +413,18 @@ func (t *Telegram) saveBatch(
 		mediaItem.index = index
 		inspected = append(inspected, mediaItem)
 	}
+	var failures []storagetypes.BatchSaveFailure
 	for _, group := range planMediaGroups(inspected) {
 		if err := t.saveMediaGroup(ctx, tctx, group, onProgress); err != nil {
-			return err
+			var partial *storagetypes.BatchSaveError
+			if !errors.As(err, &partial) {
+				return err
+			}
+			failures = append(failures, partial.Failures...)
 		}
+	}
+	if len(failures) > 0 {
+		return &storagetypes.BatchSaveError{Failures: failures}
 	}
 	return nil
 }
@@ -450,7 +465,7 @@ func planMediaGroups(items []batchMediaItem) [][]batchMediaItem {
 			continue
 		}
 		end := i + 1
-		for end < len(items) && end-i < tglimit.MaxAlbumItems {
+		for end < len(items) && end-i < min(reliableAlbumItems, tglimit.MaxAlbumItems) {
 			next := items[end]
 			if next.useSingleSave || !next.albumEligible || next.chatID != item.chatID || next.item.SourceGroupKey != item.item.SourceGroupKey {
 				break
@@ -481,30 +496,86 @@ func (t *Telegram) saveMediaGroup(
 	group []batchMediaItem,
 	onProgress func(index int, uploaded, total int64),
 ) error {
-	return retry.Retry(func() error {
-		if len(group) == 1 && group[0].useSingleSave {
-			mediaItem := group[0]
-			item := mediaItem.item
-			if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("failed to seek batch item: %w", err)
-			}
-			itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
-			if item.PreserveCaption {
-				itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
-			}
-			if onProgress == nil {
-				return t.Save(itemCtx, item.Reader, item.StoragePath)
-			}
-			return t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
-				onProgress(mediaItem.index, uploaded, total)
-			})
+	if len(group) == 1 {
+		err := t.saveBatchItemWithRetry(ctx, group[0], onProgress)
+		if err == nil {
+			return nil
 		}
-		if err := t.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limit failed: %w", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+		if !isSkippableBatchItemError(err) {
+			return err
+		}
+		failure := storagetypes.BatchSaveFailure{
+			Index: group[0].index,
+			Path:  group[0].item.StoragePath,
+			Err:   err,
+		}
+		log.FromContext(ctx).Errorf(
+			"Skipping Telegram batch item after individual upload failed: index=%d file=%q error=%v",
+			failure.Index,
+			path.Base(failure.Path),
+			failure.Err,
+		)
+		return &storagetypes.BatchSaveError{Failures: []storagetypes.BatchSaveFailure{failure}}
+	}
+	return t.saveAlbumGroup(ctx, tctx, group, onProgress)
+}
 
-		prepared := make([]preparedMedia, 0, len(group))
-		for _, mediaItem := range group {
+func (t *Telegram) saveBatchItemWithRetry(
+	ctx context.Context,
+	mediaItem batchMediaItem,
+	onProgress func(index int, uploaded, total int64),
+) error {
+	retryLimit := max(config.C().Retry, 1)
+	var lastErr error
+	for attempt := 1; attempt <= retryLimit; attempt++ {
+		lastErr = t.saveBatchItemOnce(ctx, mediaItem, onProgress)
+		if lastErr == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if isSkippableBatchItemError(lastErr) {
+			return lastErr
+		}
+		if attempt < retryLimit {
+			timer := time.NewTimer(retry.DefaultRetryLinearInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return fmt.Errorf("failed to save batch item after %d attempts: %w", retryLimit, lastErr)
+}
+
+func (t *Telegram) saveAlbumGroup(
+	ctx context.Context,
+	tctx *ext.Context,
+	group []batchMediaItem,
+	onProgress func(index int, uploaded, total int64),
+) error {
+	logger := log.FromContext(ctx).WithPrefix("telegram_album")
+	logger.Infof(
+		"Preparing Telegram album: items=%d total_bytes=%d files=%s",
+		len(group),
+		albumTotalBytes(group),
+		strings.Join(albumItemNames(group), ", "),
+	)
+
+	stableMedia := make([]message.MultiMediaOption, 0, len(group))
+	var peer tg.InputPeerClass
+	for _, mediaItem := range group {
+		var stable message.MultiMediaOption
+		var itemPeer tg.InputPeerClass
+		var mediaType string
+		var referenceBytes int
+		err := retry.Retry(func() error {
 			item := mediaItem.item
 			if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
 				return fmt.Errorf("failed to seek batch item: %w", err)
@@ -514,27 +585,210 @@ func (t *Telegram) saveMediaGroup(
 				captionOverride = &item.Caption
 			}
 			progress := batchItemUploadProgress(mediaItem, onProgress)
-			media, err := t.prepareMedia(ctx, tctx, item.Reader, item.StoragePath, item.Size, captionOverride, progress)
+			prepared, err := t.prepareMedia(ctx, tctx, item.Reader, item.StoragePath, item.Size, captionOverride, progress)
 			if err != nil {
 				return err
 			}
-			prepared = append(prepared, *media)
-		}
 
-		builder := tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer)
-		if len(prepared) == 1 {
-			_, err := builder.Media(ctx, prepared[0].media)
-			return err
+			uploaded, err := tctx.Sender.
+				WithUploader(prepared.uploader).
+				To(prepared.peer).
+				UploadMedia(ctx, prepared.media)
+			if err != nil {
+				return fmt.Errorf("failed to stabilize uploaded media: %w", err)
+			}
+			inputMedia, err := uploadedMessageMediaToInput(uploaded)
+			if err != nil {
+				return err
+			}
+			itemPeer = prepared.peer
+			mediaType = fmt.Sprintf("%T", inputMedia)
+			referenceBytes = inputMediaReferenceLength(inputMedia)
+			stable = message.ForceMulti(message.Media(inputMedia, prepared.caption...))
+			return nil
+		}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
+		if err != nil {
+			return fmt.Errorf("failed to prepare batch item %q: %w", mediaItem.item.StoragePath, err)
 		}
-		media := make([]message.MultiMediaOption, len(prepared))
-		for i := range prepared {
-			media[i] = prepared[i].media
+		if peer == nil {
+			peer = itemPeer
 		}
-		if _, err := builder.Album(ctx, media[0], media[1:]...); err != nil {
-			return fmt.Errorf("failed to send media album: %w", err)
+		logger.Debugf(
+			"Prepared Telegram album item: file=%q media_type=%s reference_bytes=%d",
+			path.Base(mediaItem.item.StoragePath),
+			mediaType,
+			referenceBytes,
+		)
+		stableMedia = append(stableMedia, stable)
+	}
+
+	err := t.sendPreparedAlbum(ctx, tctx, peer, stableMedia)
+	if err == nil || !isRecoverableAlbumMediaError(err) {
+		return err
+	}
+
+	if splitAt, ok := albumRecoverySplit(len(group)); ok {
+		logger.Warnf(
+			"Telegram rejected album media; retrying as groups of %d and %d items: %v",
+			splitAt,
+			len(group)-splitAt,
+			err,
+		)
+		var failures []storagetypes.BatchSaveFailure
+		for _, subgroup := range [][]batchMediaItem{group[:splitAt], group[splitAt:]} {
+			if splitErr := t.saveMediaGroup(ctx, tctx, subgroup, onProgress); splitErr != nil {
+				var partial *storagetypes.BatchSaveError
+				if !errors.As(splitErr, &partial) {
+					return fmt.Errorf("failed to recover album subgroup: %w", splitErr)
+				}
+				failures = append(failures, partial.Failures...)
+			}
+		}
+		if len(failures) > 0 {
+			return &storagetypes.BatchSaveError{Failures: failures}
 		}
 		return nil
-	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
+	}
+	return err
+}
+
+func (t *Telegram) sendPreparedAlbum(
+	ctx context.Context,
+	tctx *ext.Context,
+	peer tg.InputPeerClass,
+	media []message.MultiMediaOption,
+) error {
+	retryLimit := max(config.C().Retry, 1)
+	var lastErr error
+	for attempt := 1; attempt <= retryLimit; attempt++ {
+		if err := t.limiter.Wait(ctx); err != nil {
+			return fmt.Errorf("rate limit failed: %w", err)
+		}
+		builder := tctx.Sender.To(peer)
+		if _, err := builder.Album(ctx, media[0], media[1:]...); err == nil {
+			return nil
+		} else {
+			lastErr = fmt.Errorf("failed to send media album: %w", err)
+			if isRecoverableAlbumMediaError(err) {
+				return lastErr
+			}
+		}
+
+		if attempt < retryLimit {
+			timer := time.NewTimer(retry.DefaultRetryLinearInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return fmt.Errorf("failed to send media album after %d attempts: %w", retryLimit, lastErr)
+}
+
+func albumRecoverySplit(count int) (int, bool) {
+	if count < 2 {
+		return 0, false
+	}
+	return count / 2, true
+}
+
+func isRecoverableAlbumMediaError(err error) bool {
+	return tg.IsMediaEmpty(err) ||
+		tg.IsMediaFileInvalid(err) ||
+		tg.IsMediaGroupedInvalid(err) ||
+		tg.IsMediaInvalid(err) ||
+		tg.IsMediaTypeInvalid(err)
+}
+
+func isSkippableBatchItemError(err error) bool {
+	return isRecoverableAlbumMediaError(err) ||
+		tg.IsDocumentInvalid(err) ||
+		tg.IsFileContentTypeInvalid(err) ||
+		tg.IsFileEmtpy(err) ||
+		tg.IsPhotoContentTypeInvalid(err) ||
+		tg.IsPhotoExtInvalid(err) ||
+		tg.IsPhotoInvalid(err) ||
+		tg.IsPhotoInvalidDimensions(err) ||
+		tg.IsVideoContentTypeInvalid(err) ||
+		tg.IsVideoFileInvalid(err)
+}
+
+func albumItemNames(group []batchMediaItem) []string {
+	names := make([]string, 0, len(group))
+	for _, mediaItem := range group {
+		names = append(names, path.Base(mediaItem.item.StoragePath))
+	}
+	return names
+}
+
+func albumTotalBytes(group []batchMediaItem) int64 {
+	var total int64
+	for _, mediaItem := range group {
+		total += max(mediaItem.item.Size, 0)
+	}
+	return total
+}
+
+func inputMediaReferenceLength(media tg.InputMediaClass) int {
+	switch value := media.(type) {
+	case *tg.InputMediaPhoto:
+		if photo, ok := value.ID.(*tg.InputPhoto); ok {
+			return len(photo.FileReference)
+		}
+	case *tg.InputMediaDocument:
+		if document, ok := value.ID.(*tg.InputDocument); ok {
+			return len(document.FileReference)
+		}
+	}
+	return 0
+}
+
+func (t *Telegram) saveBatchItemOnce(
+	ctx context.Context,
+	mediaItem batchMediaItem,
+	onProgress func(index int, uploaded, total int64),
+) error {
+	item := mediaItem.item
+	if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek batch item: %w", err)
+	}
+	itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
+	if item.PreserveCaption {
+		itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
+	}
+	if onProgress == nil {
+		return t.Save(itemCtx, item.Reader, item.StoragePath)
+	}
+	return t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
+		onProgress(mediaItem.index, uploaded, total)
+	})
+}
+
+func uploadedMessageMediaToInput(media tg.MessageMediaClass) (tg.InputMediaClass, error) {
+	switch value := media.(type) {
+	case *tg.MessageMediaPhoto:
+		if value.Photo == nil {
+			return nil, fmt.Errorf("uploaded photo is empty")
+		}
+		photo, ok := value.Photo.AsNotEmpty()
+		if !ok {
+			return nil, fmt.Errorf("uploaded photo is empty")
+		}
+		return &tg.InputMediaPhoto{ID: photo.AsInput(), TTLSeconds: value.TTLSeconds}, nil
+	case *tg.MessageMediaDocument:
+		if value.Document == nil {
+			return nil, fmt.Errorf("uploaded document is empty")
+		}
+		document, ok := value.Document.AsNotEmpty()
+		if !ok {
+			return nil, fmt.Errorf("uploaded document is empty")
+		}
+		return &tg.InputMediaDocument{ID: document.AsInput(), TTLSeconds: value.TTLSeconds}, nil
+	default:
+		return nil, fmt.Errorf("unsupported uploaded media type %T", media)
+	}
 }
 
 func (t *Telegram) CannotStream() string {
