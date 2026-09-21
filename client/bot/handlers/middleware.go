@@ -5,9 +5,9 @@ import (
 
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
-	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/slice"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/dirutil"
+	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/msgelem"
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
 	"github.com/krau/SaveAny-Bot/config"
@@ -15,10 +15,23 @@ import (
 	"github.com/krau/SaveAny-Bot/storage"
 )
 
+// responsibleUserID returns the sender's ID. Callback queries carry it
+// natively; message updates resolve it through the entity map.
+func responsibleUserID(u *ext.Update) int64 {
+	if u.CallbackQuery != nil {
+		return u.CallbackQuery.GetUserID()
+	}
+	return u.GetUserChat().GetID()
+}
+
 func checkPermission(ctx *ext.Context, update *ext.Update) error {
-	userID := update.GetUserChat().GetID()
+	userID := responsibleUserID(update)
 	if !slice.Contain(config.C().GetUsersID(), userID) {
-		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorNoPermission, nil)), nil)
+		if cbq := update.CallbackQuery; cbq != nil {
+			ctx.AnswerCallback(msgelem.AlertCallbackAnswer(cbq.GetQueryID(), i18n.T(i18nk.BotMsgCommonErrorNoPermission, nil)))
+		} else {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorNoPermission, nil)), nil)
+		}
 		return dispatcher.EndGroups
 	}
 
@@ -26,18 +39,11 @@ func checkPermission(ctx *ext.Context, update *ext.Update) error {
 }
 
 // withPermission wraps a callback handler with the same whitelist check used
-// for message handlers (checkPermission).
+// for message handlers (checkPermission). ContinueGroups is the dispatcher's
+// success sentinel, not an error: only real failures and EndGroups stop the
+// chain before the wrapped handler runs.
 func withPermission(handler func(*ext.Context, *ext.Update) error) func(*ext.Context, *ext.Update) error {
 	return func(ctx *ext.Context, update *ext.Update) error {
-		if update.CallbackQuery != nil {
-			log.FromContext(ctx).Debug(
-				"Received callback query",
-				"user_id", update.CallbackQuery.GetUserID(),
-				"chat_id", update.GetUserChat().GetID(),
-				"msg_id", update.CallbackQuery.GetMsgID(),
-				"data", string(update.CallbackQuery.Data),
-			)
-		}
 		if err := checkPermission(ctx, update); err != nil && !errors.Is(err, dispatcher.ContinueGroups) {
 			return err
 		}
