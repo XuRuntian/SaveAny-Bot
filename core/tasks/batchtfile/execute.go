@@ -221,6 +221,7 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 			StoragePath:     elem.Path,
 			Size:            stat.Size(),
 			SourceGroupKey:  elem.sourceGroupKey,
+			RequireGroup:    elem.requireGroup,
 			Caption:         elem.sourceCaption,
 			PreserveCaption: elem.preserveCaption,
 		})

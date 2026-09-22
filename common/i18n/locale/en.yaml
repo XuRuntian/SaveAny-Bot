@@ -29,7 +29,7 @@ bot:
       /silent - Toggle silent mode
       /storage - Set default storage
       /save [custom filename] - Save file
-      /merge <message_link1> <message_link2> ... - Merge message links into album saves
+      /merge <message_link1> <message_link2> ... - Strictly merge message links into album saves
       /import <storage_name> <dir_path> [channel_id] [filter] - Import files from storage to Telegram
       /dir - Manage storage directories
       /rule - Manage rules
@@ -51,7 +51,7 @@ bot:
       dir: "Manage storage directories"
       rule: "Manage auto-save rules"
       save: "Save files"
-      merge: "Merge message links into albums"
+      merge: "Strictly merge message links into albums"
       dl: "Download files from given links"
       aria2dl: "Download files using Aria2"
       ytdlp: "Download video/audio using yt-dlp"
@@ -79,7 +79,7 @@ bot:
       Example:
       /save @acherkrau 114-514
 
-      3. When sending multiple Telegram message links, add group:merge to merge parsed photos/videos into albums in input order.
+      3. When sending multiple Telegram message links, add group:merge to merge parsed photos/videos into albums in input order. Files that cannot join an album are skipped instead of being sent as standalone messages.
     watch_help_text: |
       Use /watch to watch messages in a chat and automatically save them to the default storage, following storage rules.
 

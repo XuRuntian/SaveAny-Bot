@@ -10,7 +10,11 @@ type BatchItem struct {
 
 	// SourceGroupKey is empty for standalone source messages.
 	SourceGroupKey string
-	Caption        string
+	// RequireGroup prevents a grouped save from silently degrading to
+	// standalone files. Backends may reject items that cannot preserve the
+	// requested grouping relationship.
+	RequireGroup bool
+	Caption      string
 	// PreserveCaption distinguishes an intentionally empty source caption from
 	// the storage backend's default caption.
 	PreserveCaption bool

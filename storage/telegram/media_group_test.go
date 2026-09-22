@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -14,9 +15,10 @@ import (
 
 func TestPlanMediaGroups(t *testing.T) {
 	tests := []struct {
-		name      string
-		items     []batchMediaItem
-		wantSizes []int
+		name         string
+		items        []batchMediaItem
+		wantSizes    []int
+		wantRejected int
 	}{
 		{
 			name: "same source album",
@@ -64,11 +66,31 @@ func TestPlanMediaGroups(t *testing.T) {
 			items:     repeatedAlbumItems(11),
 			wantSizes: []int{5, 5, 1},
 		},
+		{
+			name:      "strict merge avoids trailing singleton",
+			items:     repeatedStrictAlbumItems(11),
+			wantSizes: []int{5, 4, 2},
+		},
+		{
+			name: "strict merge skips ineligible and preserves later media",
+			items: []batchMediaItem{
+				strictAlbumItem("a", 1, true),
+				strictAlbumItem("a", 1, false),
+				strictAlbumItem("a", 1, true),
+			},
+			wantSizes:    []int{2},
+			wantRejected: 1,
+		},
+		{
+			name:         "strict merge rejects a standalone remainder",
+			items:        []batchMediaItem{strictAlbumItem("a", 1, true)},
+			wantRejected: 1,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			groups := planMediaGroups(tt.items)
+			groups, rejected := planMediaGroups(tt.items)
 			if len(groups) != len(tt.wantSizes) {
 				t.Fatalf("got %d groups, want %d", len(groups), len(tt.wantSizes))
 			}
@@ -77,27 +99,69 @@ func TestPlanMediaGroups(t *testing.T) {
 					t.Errorf("group %d has %d items, want %d", i, got, want)
 				}
 			}
+			if len(rejected) != tt.wantRejected {
+				t.Errorf("got %d rejected items, want %d", len(rejected), tt.wantRejected)
+			}
 		})
 	}
 }
 
 func TestAlbumRecoverySplit(t *testing.T) {
 	tests := []struct {
-		count  int
-		wantAt int
-		wantOK bool
+		count        int
+		requireGroup bool
+		wantAt       int
+		wantOK       bool
 	}{
 		{count: 1},
 		{count: 2, wantAt: 1, wantOK: true},
 		{count: 3, wantAt: 1, wantOK: true},
 		{count: 4, wantAt: 2, wantOK: true},
 		{count: 5, wantAt: 2, wantOK: true},
+		{count: 2, requireGroup: true},
+		{count: 3, requireGroup: true},
+		{count: 4, requireGroup: true, wantAt: 2, wantOK: true},
+		{count: 5, requireGroup: true, wantAt: 2, wantOK: true},
 	}
 	for _, tt := range tests {
-		at, ok := albumRecoverySplit(tt.count)
+		at, ok := albumRecoverySplit(tt.count, tt.requireGroup)
 		if at != tt.wantAt || ok != tt.wantOK {
-			t.Errorf("albumRecoverySplit(%d) = (%d, %t), want (%d, %t)", tt.count, at, ok, tt.wantAt, tt.wantOK)
+			t.Errorf("albumRecoverySplit(%d, %t) = (%d, %t), want (%d, %t)", tt.count, tt.requireGroup, at, ok, tt.wantAt, tt.wantOK)
 		}
+	}
+}
+
+func TestStrictMediaGroupsNeverProduceSingletons(t *testing.T) {
+	for count := 2; count <= 73; count++ {
+		groups, rejected := planMediaGroups(repeatedStrictAlbumItems(count))
+		if len(rejected) != 0 {
+			t.Fatalf("count %d rejected %d valid items", count, len(rejected))
+		}
+		seen := 0
+		for _, group := range groups {
+			if len(group) < 2 || len(group) > reliableAlbumItems {
+				t.Fatalf("count %d produced invalid group size %d", count, len(group))
+			}
+			seen += len(group)
+		}
+		if seen != count {
+			t.Fatalf("count %d planned %d items", count, seen)
+		}
+	}
+}
+
+func TestStrictMediaGroupNeverFallsBackToSingleSave(t *testing.T) {
+	item := strictAlbumItem("manual", 1, true)
+	item.index = 7
+	item.item.StoragePath = "video.mp4"
+
+	err := new(Telegram).saveMediaGroup(t.Context(), nil, []batchMediaItem{item}, nil)
+	var partial *storagetypes.BatchSaveError
+	if !errors.As(err, &partial) {
+		t.Fatalf("saveMediaGroup() error = %v, want BatchSaveError", err)
+	}
+	if len(partial.Failures) != 1 || partial.Failures[0].Index != 7 {
+		t.Fatalf("failures = %#v, want item index 7", partial.Failures)
 	}
 }
 
@@ -259,6 +323,20 @@ func repeatedAlbumItems(count int) []batchMediaItem {
 	items := make([]batchMediaItem, count)
 	for i := range items {
 		items[i] = albumItem("a", 1, true)
+	}
+	return items
+}
+
+func strictAlbumItem(group string, chatID int64, eligible bool) batchMediaItem {
+	item := albumItem(group, chatID, eligible)
+	item.item.RequireGroup = true
+	return item
+}
+
+func repeatedStrictAlbumItems(count int) []batchMediaItem {
+	items := make([]batchMediaItem, count)
+	for i := range items {
+		items[i] = strictAlbumItem("a", 1, true)
 	}
 	return items
 }

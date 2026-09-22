@@ -44,6 +44,8 @@ const (
 	reliableAlbumItems = 5
 )
 
+var errAlbumGroupingRequired = errors.New("file cannot be sent without breaking the requested Telegram album")
+
 type Telegram struct {
 	config  storconfig.TelegramStorageConfig
 	limiter *rate.Limiter
@@ -405,16 +407,29 @@ func (t *Telegram) saveBatch(
 	}
 
 	inspected := make([]batchMediaItem, 0, len(items))
+	var failures []storagetypes.BatchSaveFailure
 	for index, item := range items {
 		mediaItem, err := t.inspectBatchItem(tctx, item)
 		if err != nil {
+			if item.RequireGroup {
+				failures = append(failures, batchFailure(index, item, err))
+				continue
+			}
 			return err
 		}
 		mediaItem.index = index
 		inspected = append(inspected, mediaItem)
 	}
-	var failures []storagetypes.BatchSaveFailure
-	for _, group := range planMediaGroups(inspected) {
+	groups, rejected := planMediaGroups(inspected)
+	for _, item := range rejected {
+		failures = append(failures, batchFailure(item.index, item.item, errAlbumGroupingRequired))
+		log.FromContext(ctx).Warnf(
+			"Skipping item that cannot preserve requested Telegram album: index=%d file=%q",
+			item.index,
+			path.Base(item.item.StoragePath),
+		)
+	}
+	for _, group := range groups {
 		if err := t.saveMediaGroup(ctx, tctx, group, onProgress); err != nil {
 			var partial *storagetypes.BatchSaveError
 			if !errors.As(err, &partial) {
@@ -455,10 +470,42 @@ func (t *Telegram) inspectBatchItem(tctx *ext.Context, item storagetypes.BatchIt
 	return result, nil
 }
 
-func planMediaGroups(items []batchMediaItem) [][]batchMediaItem {
+func planMediaGroups(items []batchMediaItem) ([][]batchMediaItem, []batchMediaItem) {
 	groups := make([][]batchMediaItem, 0, len(items))
+	rejected := make([]batchMediaItem, 0)
 	for i := 0; i < len(items); {
 		item := items[i]
+		if item.item.RequireGroup && item.item.SourceGroupKey != "" {
+			end := i + 1
+			for end < len(items) && items[end].item.RequireGroup &&
+				items[end].chatID == item.chatID &&
+				items[end].item.SourceGroupKey == item.item.SourceGroupKey {
+				end++
+			}
+			eligible := make([]batchMediaItem, 0, end-i)
+			for _, candidate := range items[i:end] {
+				if candidate.useSingleSave || !candidate.albumEligible {
+					rejected = append(rejected, candidate)
+					continue
+				}
+				eligible = append(eligible, candidate)
+			}
+			for len(eligible) > reliableAlbumItems {
+				size := reliableAlbumItems
+				if len(eligible)-size == 1 {
+					size--
+				}
+				groups = append(groups, eligible[:size])
+				eligible = eligible[size:]
+			}
+			if len(eligible) == 1 {
+				rejected = append(rejected, eligible[0])
+			} else if len(eligible) > 1 {
+				groups = append(groups, eligible)
+			}
+			i = end
+			continue
+		}
 		if item.useSingleSave || !item.albumEligible || item.item.SourceGroupKey == "" {
 			groups = append(groups, items[i:i+1])
 			i++
@@ -475,7 +522,7 @@ func planMediaGroups(items []batchMediaItem) [][]batchMediaItem {
 		groups = append(groups, items[i:end])
 		i = end
 	}
-	return groups
+	return groups, rejected
 }
 
 func batchItemUploadProgress(
@@ -497,6 +544,9 @@ func (t *Telegram) saveMediaGroup(
 	onProgress func(index int, uploaded, total int64),
 ) error {
 	if len(group) == 1 {
+		if group[0].item.RequireGroup {
+			return &storagetypes.BatchSaveError{Failures: batchFailures(group, errAlbumGroupingRequired)}
+		}
 		err := t.saveBatchItemWithRetry(ctx, group[0], onProgress)
 		if err == nil {
 			return nil
@@ -561,6 +611,7 @@ func (t *Telegram) saveAlbumGroup(
 	onProgress func(index int, uploaded, total int64),
 ) error {
 	logger := log.FromContext(ctx).WithPrefix("telegram_album")
+	requireGroup := group[0].item.RequireGroup
 	logger.Infof(
 		"Preparing Telegram album: items=%d total_bytes=%d files=%s",
 		len(group),
@@ -569,6 +620,8 @@ func (t *Telegram) saveAlbumGroup(
 	)
 
 	stableMedia := make([]message.MultiMediaOption, 0, len(group))
+	stableItems := make([]batchMediaItem, 0, len(group))
+	failures := make([]storagetypes.BatchSaveFailure, 0)
 	var peer tg.InputPeerClass
 	for _, mediaItem := range group {
 		var stable message.MultiMediaOption
@@ -608,6 +661,17 @@ func (t *Telegram) saveAlbumGroup(
 			return nil
 		}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
 		if err != nil {
+			if requireGroup && isSkippableBatchItemError(err) {
+				failure := batchFailure(mediaItem.index, mediaItem.item, err)
+				failures = append(failures, failure)
+				logger.Errorf(
+					"Skipping invalid Telegram album item: index=%d file=%q error=%v",
+					failure.Index,
+					path.Base(failure.Path),
+					failure.Err,
+				)
+				continue
+			}
 			return fmt.Errorf("failed to prepare batch item %q: %w", mediaItem.item.StoragePath, err)
 		}
 		if peer == nil {
@@ -620,22 +684,32 @@ func (t *Telegram) saveAlbumGroup(
 			referenceBytes,
 		)
 		stableMedia = append(stableMedia, stable)
+		stableItems = append(stableItems, mediaItem)
+	}
+	if requireGroup && len(stableMedia) < 2 {
+		failures = append(failures, batchFailures(stableItems, errAlbumGroupingRequired)...)
+		return &storagetypes.BatchSaveError{Failures: failures}
 	}
 
 	err := t.sendPreparedAlbum(ctx, tctx, peer, stableMedia)
-	if err == nil || !isRecoverableAlbumMediaError(err) {
+	if err == nil {
+		if len(failures) > 0 {
+			return &storagetypes.BatchSaveError{Failures: failures}
+		}
+		return nil
+	}
+	if !isRecoverableAlbumMediaError(err) {
 		return err
 	}
 
-	if splitAt, ok := albumRecoverySplit(len(group)); ok {
+	if splitAt, ok := albumRecoverySplit(len(stableItems), requireGroup); ok {
 		logger.Warnf(
 			"Telegram rejected album media; retrying as groups of %d and %d items: %v",
 			splitAt,
-			len(group)-splitAt,
+			len(stableItems)-splitAt,
 			err,
 		)
-		var failures []storagetypes.BatchSaveFailure
-		for _, subgroup := range [][]batchMediaItem{group[:splitAt], group[splitAt:]} {
+		for _, subgroup := range [][]batchMediaItem{stableItems[:splitAt], stableItems[splitAt:]} {
 			if splitErr := t.saveMediaGroup(ctx, tctx, subgroup, onProgress); splitErr != nil {
 				var partial *storagetypes.BatchSaveError
 				if !errors.As(splitErr, &partial) {
@@ -648,6 +722,10 @@ func (t *Telegram) saveAlbumGroup(
 			return &storagetypes.BatchSaveError{Failures: failures}
 		}
 		return nil
+	}
+	if requireGroup {
+		failures = append(failures, batchFailures(stableItems, err)...)
+		return &storagetypes.BatchSaveError{Failures: failures}
 	}
 	return err
 }
@@ -687,11 +765,26 @@ func (t *Telegram) sendPreparedAlbum(
 	return fmt.Errorf("failed to send media album after %d attempts: %w", retryLimit, lastErr)
 }
 
-func albumRecoverySplit(count int) (int, bool) {
+func albumRecoverySplit(count int, requireGroup bool) (int, bool) {
+	if requireGroup && count < 4 {
+		return 0, false
+	}
 	if count < 2 {
 		return 0, false
 	}
 	return count / 2, true
+}
+
+func batchFailure(index int, item storagetypes.BatchItem, err error) storagetypes.BatchSaveFailure {
+	return storagetypes.BatchSaveFailure{Index: index, Path: item.StoragePath, Err: err}
+}
+
+func batchFailures(group []batchMediaItem, err error) []storagetypes.BatchSaveFailure {
+	failures := make([]storagetypes.BatchSaveFailure, 0, len(group))
+	for _, item := range group {
+		failures = append(failures, batchFailure(item.index, item.item, err))
+	}
+	return failures
 }
 
 func isRecoverableAlbumMediaError(err error) bool {

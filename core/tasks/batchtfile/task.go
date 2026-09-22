@@ -36,6 +36,7 @@ type TaskElement struct {
 	localPath       string
 	stream          bool
 	sourceGroupKey  string
+	requireGroup    bool
 	sourceCaption   string
 	preserveCaption bool
 }
@@ -108,6 +109,10 @@ func (e *TaskElement) SetSourceMetadata(groupKey, caption string, preserveCaptio
 	e.sourceGroupKey = groupKey
 	e.sourceCaption = caption
 	e.preserveCaption = preserveCaption
+}
+
+func (e *TaskElement) SetRequireGroup() {
+	e.requireGroup = true
 }
 
 func (e *TaskElement) SetSourceCaption(caption string) {

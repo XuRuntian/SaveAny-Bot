@@ -327,6 +327,7 @@ func applyManualGroupKey(elem *batchtfile.TaskElement, manualGroupKey string, fi
 		caption = file.Message().GetMessage()
 	}
 	elem.SetSourceMetadata(manualGroupKey, caption, true)
+	elem.SetRequireGroup()
 }
 
 func promptTGFileConflictStrategy(ctx *ext.Context, userID int64, storageName, dirPath string, files []tfile.TGFileMessage, asBatch bool, conflicts []string, trackMsgID int, manualGroupKey string) error {
